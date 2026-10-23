@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<BaliProject version="3.2" title="combolite" device="LCMXO2-7000HE-4TG144C" default_implementation="impl1">
+    <Options/>
+    <Implementation title="impl1" dir="impl1" description="impl1" synthesis="synplify" default_strategy="Strategy1">
+        <Options def_top="rev4_top" top="rev4_top"/>
+        <Source name="../hdl/audio.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/autostart.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/ay_iface.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/boot_rom.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/bram.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/bus_watch.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/fakerom.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/fdc.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/fdc_core.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/ide.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/ide_arb.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/ide_cycle.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/ide_remote.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/kvaz_sram.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/mfm_wr.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/mirror.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/mouse.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/pll_fdc.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/rom_sense.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/rev4_top.v" type="Verilog" type_short="Verilog">
+            <Options top_module="rev4_top"/>
+        </Source>
+        <Source name="../hdl/scr_buf.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/shap_demux.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/spi_slave.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/top.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vi53.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vi53_tick.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vid_fetch.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vid_phase.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vid_play.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vid_raster.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vid_rec.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vu_bus.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/ym2149.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vendor/fdc1793/AMD.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vendor/fdc1793/CRC16_D8.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vendor/fdc1793/DPLL.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vendor/fdc1793/MFMDEC.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../hdl/vendor/fdc1793/Main_CTRL.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
+        <Source name="../constraints/pins.lpf" type="Logic Preference" type_short="LPF">
+            <Options/>
+        </Source>
+    </Implementation>
+    <Strategy name="Strategy1" file="combolite.sty"/>
+</BaliProject>

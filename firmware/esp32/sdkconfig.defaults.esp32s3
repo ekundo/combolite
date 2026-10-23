@@ -1,0 +1,7 @@
+# Только для ESP32-S3, поверх sdkconfig.defaults.
+#
+# Розетка USB платы отдана хосту под мышь (mouse_esp.c), а USB-Serial-JTAG сидит
+# на тех же выводах 19/20. Вторая консоль на нём по умолчанию включена у S3 и
+# замолчала бы с первым же usb_host_install -- лучше честно выключить её здесь.
+# Журнал читается по WiFi (combo.py log) и с площадок UART0.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

@@ -1,0 +1,336 @@
+# Ограничения для LCMXO2-7000HE-4TG144C, корпус TQFP144.
+# Файл сгенерирован по таблице выводов Lattice (MachXO2-7000Pinout.csv).
+#
+# Прибор: LCMXO2-7000HE-4TG144C (в проекте Diamond — он же).
+# DEVICE: LCMXO2-7000HE-4TG144C
+#
+# Посадочное место то же, что у LCMXO2-4000: по миграционному файлу
+# Lattice сходятся все выводы, сколько их есть (144): банк и
+# дополнительная функция те же. У 94 различаются только внутренние имена
+# площадок — важно, только если привязываться по имени площадки, а не по
+# номеру.
+#
+# Посадочное место разводится под оба сорта 7000-го, HC и HE. Даташит
+# FPGA-DS-02056-4-7, Introduction: «With the exception
+# of power supply voltage all three types of devices (ZE, HC and HE) are
+# functionally compatible and pin compatible with each other». Разница
+# только в питании VCC (выводы 36, 72, 108, 144): HC принимает 3,3 или
+# 2,5 В, ZE и HE — только 1,2 В.
+#
+# Не занимать никогда: 120 JTAGENB, 130 TMS, 131 TCK, 136 TDI, 137 TDO.
+# Вывод 120 (JTAGENB) управляет тем, работают ли TDI/TDO/TMS/TCK как JTAG;
+# на плате он подтянут 1 кОм вверх.
+
+BLOCK RESETPATHS;
+BLOCK ASYNCPATHS;
+# Переходы между тактами clk50, clk40, clk16 Diamond проверял бы как
+# синхронные: все три от одной ФАПЧ. Каждый переход в HDL сделан
+# нарочно — синхронизатор на 2-3 триггера, двухтактовая EBR или строб,
+# стоящий сотни нс.
+BLOCK INTERCLOCKDOMAIN PATHS;
+
+# Генератор 50,000 МГц на PCLKT5_0. Дальше ФАПЧ (hdl/pll_fdc.v): 40 МГц
+# точке VGA и 16 МГц ядру ВГ93; их частоты Diamond выводит из ФАПЧ сам.
+# Такт AY 1,750000 МГц — дробным делением от 50, см. hdl/ay_iface.v.
+# Число здесь задаёт, с чем сверяется отчёт по времени: поставить
+# меньше действительного значит получить ложный запас.
+FREQUENCY PORT "clk50" 50.000000 MHz;
+
+# Выходы ФАПЧ (hdl/pll_fdc.v), в Map — цепи верхнего уровня pll/pll.
+# Без этих строк Synplify считает их «inferred clock» и проверяет по
+# 50 МГц из build.tcl — строже, но отчёт по времени не про наши такты.
+FREQUENCY NET "clk40" 40.000000 MHz;
+FREQUENCY NET "clk16" 16.000000 MHz;
+
+# Такт защёлки 574: чистая комбинация ras_n -> latch_clk, тактовая
+# частота её не покрывает, и без этой строки отчёт о ней промолчит.
+#
+# 10 нс здесь — НЕ требование, а сторожевой порог. Требование измерено
+# на машине: адрес строки держится 100 нс, из них 5 забирает установка
+# защёлки, остальное делят кристалл и два транслятора. Кристаллу
+# достаётся порядка 85 нс, а он берёт 7,731 — меньше десятой части.
+#
+# Порог оставлен тесным намеренно: он должен сработать, если правка HDL
+# или другое размещение утроят задержку, — задолго до того, как это
+# станет опасным. Ослаблять его до настоящих 85 нс значит выключить
+# предупреждение. Diamond 3.5 строку принимает.
+MAXDELAY FROM PORT "ras_n" TO PORT "latch_clk" 10.000000 nS;
+
+# Сам гейт -- у выводов: ras_n 143 (PT9A) и latch_clk 141 (PT10A) на
+# верхнем краю. Без привязки размещение уводит его в середину
+# кристалла: 12,65 нс вместо 7,61 с привязкой, сторож выше срабатывает.
+# Гейт -- модуль lclk_gate (hdl/vu_bus.v) с syn_hier="hard", имя
+# core/bus/lclk постоянное. Область -- строки 2-4, столбцы 8-12, там же,
+# где размещение ставит его само (R3C11D).
+UGROUP "LCLK_GRP" BLKNAME core/bus/lclk;
+REGION "LCLK_REG" "R2C8D" 3 5 DEVSIZE;
+LOCATE UGROUP "LCLK_GRP" REGION "LCLK_REG";
+
+# Сторожа путей вход -> выход, смысл тот же, что у порога latch_clk выше.
+# Только FROM PORT: от триггера к latch_clk2 13,0 нс, больше порога.
+MAXDELAY FROM PORT "cas_n" TO PORT "latch_clk2" 12.000000 nS;
+MAXDELAY TO PORT "buf_oe_n" 36.000000 nS;
+MAXDELAY TO PORT "buf_dir" 36.000000 nS;
+MAXDELAY TO PORT "shd_dir" 36.000000 nS;
+MAXDELAY TO PORT "shd[0]" 36.000000 nS;
+MAXDELAY TO PORT "shd[1]" 36.000000 nS;
+MAXDELAY TO PORT "shd[2]" 36.000000 nS;
+MAXDELAY TO PORT "shd[3]" 36.000000 nS;
+MAXDELAY TO PORT "shd[4]" 36.000000 nS;
+MAXDELAY TO PORT "shd[5]" 36.000000 nS;
+MAXDELAY TO PORT "shd[6]" 36.000000 nS;
+MAXDELAY TO PORT "shd[7]" 36.000000 nS;
+MAXDELAY TO PORT "blk_n" 25.000000 nS;
+MAXDELAY TO PORT "sram_ce0_n" 25.000000 nS;
+MAXDELAY TO PORT "sram_ce1_n" 25.000000 nS;
+MAXDELAY TO PORT "sram_page[0]" 25.000000 nS;
+MAXDELAY TO PORT "sram_page[1]" 25.000000 nS;
+MAXDELAY TO PORT "sram_page[2]" 25.000000 nS;
+MAXDELAY TO PORT "addr_src" 21.000000 nS;
+MAXDELAY TO PORT "ide_dd[0]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[1]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[2]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[3]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[4]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[5]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[6]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[7]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[8]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[9]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[10]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[11]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[12]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[13]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[14]" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd[15]" 29.000000 nS;
+MAXDELAY TO PORT "ide_cs0_n" 29.000000 nS;
+MAXDELAY TO PORT "ide_dior_n" 29.000000 nS;
+MAXDELAY TO PORT "ide_diow_n" 29.000000 nS;
+MAXDELAY TO PORT "ide_dd_dir" 29.000000 nS;
+MAXDELAY TO PORT "ide_da[0]" 29.000000 nS;
+MAXDELAY TO PORT "ide_da[1]" 29.000000 nS;
+MAXDELAY TO PORT "ide_da[2]" 29.000000 nS;
+
+# Порты конфигурации — в Feature Row, TN-02155, таблица 7.1. По
+# умолчанию SLAVE_SPI_PORT ВЫКЛЮЧЕН, а прошивка ПЛИС с ESP идёт ровно
+# через него: без ENABLE ESP не перешьёт кристалл после первой загрузки.
+# SDM_PORT=DISABLE — DONE, INITN, PROGRAMN заняты сигналами (см. конец файла);
+# I2C_PORT=DISABLE — его выводы тоже сигналы. JTAG остаётся.
+# Если Diamond строку не примет — те же значения в Spreadsheet View,
+# Global Preferences.
+SYSCONFIG JTAG_PORT=ENABLE SLAVE_SPI_PORT=ENABLE MASTER_SPI_PORT=DISABLE I2C_PORT=DISABLE SDM_PORT=DISABLE ;
+
+LOCATE COMP "ide_dd[8]" SITE "1";  # PL3A, банк 5, L_GPLLT_FB
+LOCATE COMP "ide_dd[9]" SITE "2";  # PL3B, банк 5, L_GPLLC_FB
+LOCATE COMP "ide_dd[7]" SITE "3";  # PL4A, банк 5, L_GPLLT_IN
+LOCATE COMP "ide_dd[10]" SITE "4";  # PL4B, банк 5, L_GPLLC_IN
+LOCATE COMP "clk50" SITE "5";  # PL6A, банк 5, PCLKT5_0
+LOCATE COMP "ide_dd[6]" SITE "6";  # PL6B, банк 5, PCLKC5_0
+LOCATE COMP "ide_dd[11]" SITE "9";  # PL8A, банк 5
+LOCATE COMP "ide_dd[5]" SITE "10";  # PL8B, банк 5
+LOCATE COMP "ide_dd[12]" SITE "11";  # PL9A, банк 5
+LOCATE COMP "ide_dd[4]" SITE "12";  # PL9B, банк 5
+LOCATE COMP "ide_dd[13]" SITE "13";  # PL10A, банк 4
+LOCATE COMP "ide_dd[3]" SITE "14";  # PL10B, банк 4
+LOCATE COMP "ide_dd[14]" SITE "15";  # PL11A, банк 4
+LOCATE COMP "ide_dd[2]" SITE "17";  # PL11B, банк 4
+LOCATE COMP "ide_dd[15]" SITE "19";  # PL12A, банк 4, PCLKT4_0
+LOCATE COMP "ide_dd[1]" SITE "20";  # PL12B, банк 4, PCLKC4_0
+LOCATE COMP "ide_dd[0]" SITE "21";  # PL15A, банк 4
+LOCATE COMP "ide_dd_dir" SITE "22";  # PL15B, банк 4
+LOCATE COMP "ide_da[0]" SITE "23";  # PL17A, банк 4
+LOCATE COMP "ide_da[1]" SITE "24";  # PL17B, банк 4
+LOCATE COMP "ide_da[2]" SITE "25";  # PL19A, банк 3
+LOCATE COMP "ide_cs0_n" SITE "26";  # PL19B, банк 3
+LOCATE COMP "ide_dior_n" SITE "27";  # PL22A, банк 3, PCLKT3_0
+LOCATE COMP "ide_diow_n" SITE "28";  # PL22B, банк 3, PCLKC3_0
+LOCATE COMP "ide_reset_n" SITE "31";  # PL23D, банк 3
+LOCATE COMP "fdd_ds0_n" SITE "32";  # PL24A, банк 3
+LOCATE COMP "fdd_ds1_n" SITE "33";  # PL24B, банк 3
+LOCATE COMP "fdd_moton_n" SITE "34";  # PL25A, банк 3
+LOCATE COMP "fdd_dir_n" SITE "35";  # PL25B, банк 3
+LOCATE COMP "esp_sck" SITE "38";  # PB4A, банк 2
+LOCATE COMP "esp_mosi" SITE "39";  # PB4B, банк 2
+LOCATE COMP "esp_miso" SITE "41";  # PB6B, банк 2
+LOCATE COMP "esp_cs" SITE "42";  # PB9A, банк 2
+LOCATE COMP "fdd_step_n" SITE "43";  # PB9B, банк 2
+LOCATE COMP "fdd_wdata_n" SITE "47";  # PB13A, банк 2
+LOCATE COMP "fdd_wgate_n" SITE "48";  # PB13B, банк 2
+LOCATE COMP "fdd_side1_n" SITE "49";  # PB16A, банк 2, PCLKT2_0
+LOCATE COMP "fdd_index_n" SITE "50";  # PB16B, банк 2, PCLKC2_0
+LOCATE COMP "fdd_trk00_n" SITE "52";  # PB18A, банк 2
+LOCATE COMP "fdd_wpt_n" SITE "54";  # PB18B, банк 2
+LOCATE COMP "fdd_rdata_n" SITE "55";  # PB23A, банк 2, PCLKT2_1
+LOCATE COMP "fdd_rdy_n" SITE "56";  # PB23B, банк 2, PCLKC2_1
+LOCATE COMP "shd[7]" SITE "57";  # PB26A, банк 2
+LOCATE COMP "shd[6]" SITE "58";  # PB26B, банк 2
+LOCATE COMP "shd[5]" SITE "59";  # PB29A, банк 2
+LOCATE COMP "shd[4]" SITE "60";  # PB29B, банк 2
+LOCATE COMP "shd[3]" SITE "61";  # PB31A, банк 2
+LOCATE COMP "shd[0]" SITE "62";  # PB31B, банк 2
+LOCATE COMP "shd[1]" SITE "63";  # PB31D, банк 2
+LOCATE COMP "shd[2]" SITE "65";  # PB35A, банк 2
+LOCATE COMP "shd_dir" SITE "67";  # PB35B, банк 2
+LOCATE COMP "buf_oe_n" SITE "68";  # PB37A, банк 2
+LOCATE COMP "key_vvod" SITE "69";  # PB37B, банк 2
+LOCATE COMP "vga_r[2]" SITE "73";  # PR24B, банк 1
+LOCATE COMP "vga_r[1]" SITE "74";  # PR24A, банк 1
+LOCATE COMP "vga_r[0]" SITE "75";  # PR23B, банк 1
+LOCATE COMP "vga_g[2]" SITE "76";  # PR23A, банк 1
+LOCATE COMP "vga_g[1]" SITE "77";  # PR21B, банк 1
+LOCATE COMP "vga_g[0]" SITE "78";  # PR21A, банк 1
+LOCATE COMP "vga_b[1]" SITE "81";  # PR18B, банк 1
+LOCATE COMP "vga_b[0]" SITE "82";  # PR18A, банк 1
+LOCATE COMP "vga_hs" SITE "83";  # PR17B, банк 1
+LOCATE COMP "vga_vs" SITE "84";  # PR17A, банк 1
+LOCATE COMP "audio_l" SITE "85";  # PR16B, банк 1
+LOCATE COMP "audio_r" SITE "86";  # PR16A, банк 1
+LOCATE COMP "shavv_n[0]" SITE "87";  # PR15B, банк 1
+LOCATE COMP "shavv_n[1]" SITE "89";  # PR15A, банк 1
+LOCATE COMP "shavv_n[2]" SITE "91";  # PR12B, банк 1, PCLKC1_0
+LOCATE COMP "shavv_n[3]" SITE "92";  # PR12A, банк 1, PCLKT1_0
+LOCATE COMP "shavv_n[4]" SITE "93";  # PR11B, банк 1
+LOCATE COMP "shavv_n[5]" SITE "94";  # PR11A, банк 1
+LOCATE COMP "shavv_n[6]" SITE "95";  # PR9B, банк 1
+LOCATE COMP "shavv_n[7]" SITE "96";  # PR9A, банк 1
+LOCATE COMP "buf_dir" SITE "97";  # PR7B, банк 1
+LOCATE COMP "sram_oe_n" SITE "98";  # PR7A, банк 1
+LOCATE COMP "addr_src" SITE "99";  # PR5B, банк 1
+LOCATE COMP "addr_cpc" SITE "100";  # PR5A, банк 1
+LOCATE COMP "addr_mrc" SITE "103";  # PR4C, банк 1
+LOCATE COMP "sram_page[0]" SITE "104";  # PR3B, банк 1, R_GPLLC_IN
+LOCATE COMP "sram_page[1]" SITE "105";  # PR3A, банк 1, R_GPLLT_IN
+LOCATE COMP "sram_page[2]" SITE "106";  # PR2B, банк 1, R_GPLLC_FB
+LOCATE COMP "xlat_oe_n" SITE "107";  # PR2A, банк 1, R_GPLLT_FB
+LOCATE COMP "sram_ce0_n" SITE "109";  # PT36D, банк 0, DONE
+LOCATE COMP "sram_ce1_n" SITE "110";  # PT36C, банк 0, INITN
+LOCATE COMP "key_sbr" SITE "111";  # PT35B, банк 0
+LOCATE COMP "strob" SITE "112";  # PT35A, банк 0
+# LOCATE COMP "shap[7]" SITE "113";  # PT33B, банк 0
+LOCATE COMP "shap[6]" SITE "114";  # PT33A, банк 0
+LOCATE COMP "shap[5]" SITE "115";  # PT28B, банк 0
+LOCATE COMP "shap[4]" SITE "117";  # PT28A, банк 0
+LOCATE COMP "blk_n" SITE "119";  # PT27D, банк 0, PROGRAMN
+LOCATE COMP "shap[3]" SITE "121";  # PT25B, банк 0
+LOCATE COMP "shap[2]" SITE "122";  # PT25A, банк 0
+LOCATE COMP "shap[1]" SITE "125";  # PT22D, банк 0, SDA/PCLKC0_0
+LOCATE COMP "shap[0]" SITE "126";  # PT22C, банк 0, SCL/PCLKT0_0
+LOCATE COMP "sbros_n" SITE "127";  # PT18B, банк 0, PCLKC0_1
+LOCATE COMP "stack" SITE "128";  # PT18A, банк 0, PCLKT0_1
+LOCATE COMP "zpvv_n" SITE "132";  # PT15B, банк 0
+LOCATE COMP "chtvv_n" SITE "133";  # PT15A, банк 0
+LOCATE COMP "zpzu_n" SITE "138";  # PT11B, банк 0
+LOCATE COMP "chtzu_n" SITE "139";  # PT11A, банк 0
+LOCATE COMP "latch_clk2" SITE "140";  # PT10B, банк 0
+LOCATE COMP "latch_clk" SITE "141";  # PT10A, банк 0
+LOCATE COMP "cas_n" SITE "142";  # PT9B, банк 0
+LOCATE COMP "ras_n" SITE "143";  # PT9A, банк 0
+
+IOBUF PORT "ide_dd[8]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[9]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[7]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[10]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "clk50" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[6]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[11]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[5]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[12]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[4]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[13]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[3]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[14]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[2]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[15]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[1]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd[0]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dd_dir" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_da[0]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_da[1]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_da[2]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_cs0_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_dior_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_diow_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ide_reset_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_ds0_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_ds1_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_moton_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_dir_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "esp_sck" IO_TYPE=LVCMOS33 PULLMODE=DOWN;
+IOBUF PORT "esp_mosi" IO_TYPE=LVCMOS33 PULLMODE=DOWN;
+IOBUF PORT "esp_miso" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "esp_cs" IO_TYPE=LVCMOS33 PULLMODE=UP;
+IOBUF PORT "fdd_step_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_wdata_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_wgate_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_side1_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_index_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_trk00_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_wpt_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_rdata_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "fdd_rdy_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shd[7]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shd[6]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shd[5]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shd[4]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shd[3]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shd[0]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shd[1]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shd[2]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shd_dir" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "buf_oe_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "key_vvod" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "vga_r[2]" IO_TYPE=LVCMOS33 PULLMODE=NONE DRIVE=24;
+IOBUF PORT "vga_r[1]" IO_TYPE=LVCMOS33 PULLMODE=NONE DRIVE=24;
+IOBUF PORT "vga_r[0]" IO_TYPE=LVCMOS33 PULLMODE=NONE DRIVE=24;
+IOBUF PORT "vga_g[2]" IO_TYPE=LVCMOS33 PULLMODE=NONE DRIVE=24;
+IOBUF PORT "vga_g[1]" IO_TYPE=LVCMOS33 PULLMODE=NONE DRIVE=24;
+IOBUF PORT "vga_g[0]" IO_TYPE=LVCMOS33 PULLMODE=NONE DRIVE=24;
+IOBUF PORT "vga_b[1]" IO_TYPE=LVCMOS33 PULLMODE=NONE DRIVE=24;
+IOBUF PORT "vga_b[0]" IO_TYPE=LVCMOS33 PULLMODE=NONE DRIVE=24;
+IOBUF PORT "vga_hs" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "vga_vs" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "audio_l" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "audio_r" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shavv_n[0]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shavv_n[1]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shavv_n[2]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shavv_n[3]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shavv_n[4]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shavv_n[5]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shavv_n[6]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shavv_n[7]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "buf_dir" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "sram_oe_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "addr_src" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "addr_cpc" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "addr_mrc" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "sram_page[0]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "sram_page[1]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "sram_page[2]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "xlat_oe_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "sram_ce0_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "sram_ce1_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "key_sbr" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "strob" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+# IOBUF PORT "shap[7]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shap[6]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shap[5]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shap[4]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "blk_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shap[3]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shap[2]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shap[1]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "shap[0]" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "sbros_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "stack" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "zpvv_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "chtvv_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "zpzu_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "chtzu_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "latch_clk2" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "latch_clk" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "cas_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+IOBUF PORT "ras_n" IO_TYPE=LVCMOS33 PULLMODE=NONE;
+
+# Свободные выводы, оставленные в запасе: нет
+# Выводы конфигурации заняты сигналами: 109 DONE — sram_ce0_n, 110 INITN — sram_ce1_n, 119 PROGRAMN — blk_n
