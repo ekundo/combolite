@@ -199,6 +199,7 @@ wire       fr_blk, fr_on;         // окно подставного загру�
 wire       boot_kbd;              // загрузчик после ВВОД с клавиатуры, 0x56 по SPI
 wire       kb_boot;               // ВВОД с клавиатуры узнан: взвести и СБР
 wire [63:0] kb_diag;              // блок диагностики 6 (rom_sense.v)
+wire       kb_listen;             // rom_sense ждёт первых чтений: буфер ШД к ПЛИС
 wire [10:0] pal_ra;               // палитра для снимка экрана: ячейка (0x57)
 wire [7:0]  pal_rd;               //   и её байт (vid_rec.v), дальше журнал портов
 wire        pal_busy;             // выдача идёт -- журнал портов стоит
@@ -608,7 +609,7 @@ shap_demux demux (
 );
 
 fakerom loader (
-    .clk(clk), .por(por), .sys_reset(sys_reset),
+    .clk(clk), .por(por), .sys_reset(sys_reset), .strob(strob),
     .a_hi(bus_addr), .a_lo(shap_lo),
     .memrd(memrd), .chtzu_n(chtzu_n), .memwr(memwr), .zpzu_n(zpzu_n),
     .iord(iord), .iowr(iowr),
@@ -633,10 +634,10 @@ rom_sense rsense (
     .clk(clk), .por(por), .sys_reset(sys_reset),
     .key_vvod(key_vvod), .key_sbr(key_sbr),
     .memrd(memrd), .din(shd_in), .ours(kv_on | fr_blk), .en(boot_kbd),
-    .vvod_boot(kb_boot), .diag(kb_diag)
+    .vvod_boot(kb_boot), .listen(kb_listen), .diag(kb_diag)
 );
 end else begin : g_no_kbd_rst
-    assign kb_boot = 1'b0; assign kb_diag = 64'd0;
+    assign kb_boot = 1'b0; assign kb_diag = 64'd0; assign kb_listen = 1'b0;
 end endgenerate
 // -------------------------------------------------------------------- ВИ53
 // Таймер машины, собранный прослушиванием записей в порты 08h..0Bh (и разряд
@@ -872,10 +873,16 @@ assign shd_dir = bus_oe;
 // чтение кадра под стробом отбито (vid_fetch.v). Открывается тоже по сырому.
 // Чтение включает буфер через ~60 нс после спада ~ЧТЗУ: направление ждёт
 // очищенного строба, и это нарочно -- ~ЧТЗУ держится от 580 нс.
+// ПЕРВЫЕ ЧТЕНИЯ ПОСЛЕ СБРОСА (rom_sense.v) -- тоже к памяти: ПЛИС должна
+// видеть байты ПЗУ или ОЗУ машины. Сторона памяти в этот момент ничья:
+// квазидиск после сброса выключен, чтение кадра гаснет по сырому ~ЧТЗУ
+// (vid_fetch.v), зеркало выбирает статику только на записи. В окне
+// загрузчика не открываем: там на чтение отвечаем мы сами.
 wire buf_rd = (memrd & (kv_on | fr_blk)) | bus_oe;   // процессор читает у нас
+wire kb_rd  = kb_listen & ~fr_on & ~kv_on & ~chtzu_n;
 assign buf_dir  = buf_rd;
 assign buf_oe_n = ~((buf_rd & (~chtzu_n | ~chtvv_n)) |
-                    (~buf_rd & (~zpzu_n | ~zpvv_n | strob)));
+                    (~buf_rd & (~zpzu_n | ~zpvv_n | strob | kb_rd)));
 
 // ------------------------------------------------------------- SPI к ESP32
 // ESP32 держит файловую систему, а сектора читает и пишет через нас --
