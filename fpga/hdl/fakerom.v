@@ -29,6 +29,18 @@
 // и испортить загруженное. После СБР процессор идёт с 0000 уже по ОЗУ: там
 // загрузчик оставил JMP на загруженное.
 //
+// АВТОЗАПУСК (autostart, 0x56 разряд 1) -- одна настройка на оба
+// загрузчика. Выключен: BOOT26, домигав, только развзводится, окно остаётся
+// до БЛК+СБР с клавиатуры (любой сброс его гасит) -- как с настоящим ПЗУ.
+//
+// ПОСЛЕ ЗАГРУЗЧИКА ПЗУ (rom_go = автозапуск и rom_live из rom_sense.v).
+// Загрузчик в ПЗУ «Вектора» кончает тем же: мигает РУС/ЛАТ и ждёт БЛК+СБР.
+// Пока после ВВОД работает ПЗУ, модуль считает смены PC3 тем же счётом и на
+// BLINKS-й просит СБР. Окно при этом не открывается: ПЗУ отключит сам сброс,
+// и процессор пойдёт с 0000 по ОЗУ, как после ручного БЛК+СБР. Ошибиться на
+// программе нельзя: включённое ПЗУ выключает только сброс, а с ним снимается
+// и rom_live.
+//
 // КОМАНДЫ ESP (0x4C + байт, ide_remote.v): 0 -- развзвести и закрыть окно;
 // 1 -- взвести, окно откроется после нашего следующего СБР; 2 -- взвести и
 // сразу попросить СБР (обычный путь: ESP ожила, машина в удержании ВВОД).
@@ -51,7 +63,9 @@
 `default_nettype none
 
 module fakerom #(
-    parameter integer BLINKS = 4
+    // Две смены: BOOT26 меняет PC3 только в цикле ожидания (раз в 8 кадров,
+    // 160 мс), так что СБР приходит через 160-320 мс после конца загрузки.
+    parameter integer BLINKS = 2
 ) (
     input  wire       clk,
     input  wire       por,
@@ -74,6 +88,8 @@ module fakerom #(
     input  wire [1:0] cmd,
     input  wire       key_sbr,       // наш СБР нажат (autostart.v)
     input  wire       auto_boot,     // ВВОД с клавиатуры (rom_sense.v): взвести и СБР
+    input  wire       autostart,     // по концу загрузки BOOT26 нажать СБР самим
+    input  wire       rom_go,        // автозапуск включён и работает ПЗУ (rom_sense.v)
     output reg        sbr_req = 1'b0,// нажать СБР
     // наружу
     output wire       blk,           // выставить ~БЛК
@@ -87,6 +103,8 @@ module fakerom #(
 reg       key_sbr_r = 1'b0, rst_r = 1'b0;
 reg       pc3 = 1'b0;
 reg [2:0] blinks = 3'd0;
+reg [2:0] rblinks = 3'd0;            // мигания загрузчика ПЗУ
+reg       rdone = 1'b0;              // СБР за этот запуск ПЗУ уже попрошен
 
 wire sbr_released = key_sbr_r & ~key_sbr;
 wire reset_begins = sys_reset & ~rst_r;
@@ -139,9 +157,21 @@ always @(posedge clk) begin
         if (on & armed & pc3_wr & (pc3_new != pc3)) begin
             if (blinks == BLINKS - 1) begin
                 armed   <= 1'b0;     // окно погаснет с началом сброса
-                sbr_req <= 1'b1;
+                sbr_req <= autostart;
             end
             blinks <= blinks + 3'd1;
+        end
+        // то же после загрузчика ПЗУ
+        if (!rom_go) begin
+            rblinks <= 3'd0;
+            rdone   <= 1'b0;
+        end
+        else if (pc3_wr & (pc3_new != pc3) & ~rdone) begin
+            if (rblinks == BLINKS - 1) begin
+                sbr_req <= 1'b1;
+                rdone   <= 1'b1;
+            end
+            rblinks <= rblinks + 3'd1;
         end
     end
 end

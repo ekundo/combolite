@@ -99,6 +99,7 @@ module rev4_top (
 );
 
 wire clk16, clk40, pll_lock;
+wire cpc_d0, cpc_d1;                   // такт 590-го половинами, на ODDRXE (ниже)
 pll_fdc pll (.clk50(clk50), .clk40(clk40), .clk16(clk16), .lock(pll_lock));
 
 top #(
@@ -132,9 +133,16 @@ top #(
     .key_vvod(key_vvod), .key_sbr(key_sbr),
     .clk_vga(clk40), .strob(strob),
     .vga_r(vga_r), .vga_g(vga_g), .vga_b(vga_b), .vga_hs(vga_hs), .vga_vs(vga_vs),
-    .addr_cpc(addr_cpc), .addr_mrc(addr_mrc), .addr_src(addr_src), .sram_oe_n(sram_oe_n),
+    .addr_cpc(), .addr_cpc_d0(cpc_d0), .addr_cpc_d1(cpc_d1),
+    .addr_mrc(addr_mrc), .addr_src(addr_src), .sram_oe_n(sram_oe_n),
     .buf_dir(buf_dir), .buf_oe_n(buf_oe_n)
 );
+
+// Такт счётчиков адреса статики (74HC590) -- через DDR-регистр вывода: подвод
+// идёт импульсами 30/30 нс, полутактами 50 МГц (vid_fetch.v, «ПОДВОД -- ВДВОЕ
+// ЧАЩЕ»). D0 -- высокая половина такта, D1 -- низкая; на одинаковых D0 и D1
+// вывод ведёт себя как обычный выходной регистр.
+ODDRXE cpc_oddr (.SCLK(clk50), .RST(1'b0), .D0(cpc_d0), .D1(cpc_d1), .Q(addr_cpc));
 
 endmodule
 

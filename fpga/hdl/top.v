@@ -137,6 +137,8 @@ module top #(
     output wire        vga_hs,
     output wire        vga_vs,
     output wire        addr_cpc,
+    output wire        addr_cpc_d0,    // такт 590-го половинами для ODDRXE (vid_fetch.v)
+    output wire        addr_cpc_d1,
     output wire        addr_mrc,
     output wire        addr_src,
     output wire        sram_oe_n,
@@ -197,6 +199,8 @@ wire       loader_stb;            // подставной загрузчик, 0x
 wire [1:0] loader_cmd;
 wire       fr_blk, fr_on;         // окно подставного загрузчика (fakerom.v)
 wire       boot_kbd;              // загрузчик после ВВОД с клавиатуры, 0x56 по SPI
+wire       boot_auto;             // автозапуск загруженного (BOOT26 и ПЗУ), 0x56 разряд 1
+wire       kb_rom_live;           // после ВВОД работает ПЗУ (rom_sense.v)
 wire       kb_boot;               // ВВОД с клавиатуры узнан: взвести и СБР
 wire [63:0] kb_diag;              // блок диагностики 6 (rom_sense.v)
 wire       kb_listen;             // rom_sense ждёт первых чтений: буфер ШД к ПЛИС
@@ -503,7 +507,7 @@ ide_remote #(.KBD(KBD_RST ? 1 : 0), .PAL(VIDEO ? 1 : 0)) remote (
     .dev_off(dev_off), .fdc_rdy_sel(fdc_rdy_sel), .fdd_pc_cable(fdd_pc_cable),
     .fdc_pc(fdc_pc),
     .key_stb(key_stb), .key_cmd(key_cmd),
-    .loader_stb(loader_stb), .loader_cmd(loader_cmd), .boot_kbd(boot_kbd),
+    .loader_stb(loader_stb), .loader_cmd(loader_cmd), .boot_kbd(boot_kbd), .boot_auto(boot_auto),
     .dm_start(dm_start), .dm_next(dm_next), .dm_byte(dm_byte), .vga60(vga60),
     .scr_req_stb(scr_req_stb), .scr_req_row(scr_req_row),
     .sr_start(sr_start), .sr_next(sr_next), .sr_byte(sr_byte),
@@ -615,6 +619,7 @@ fakerom loader (
     .iord(iord), .iowr(iowr),
     .iowr_reg(iowr_reg), .din(shd_in), .kv_on(kv_on),
     .cmd_stb(loader_stb), .cmd(loader_cmd), .key_sbr(key_sbr), .auto_boot(kb_boot),
+    .autostart(boot_auto), .rom_go(boot_auto & kb_rom_live),
     .sbr_req(fr_sbr_req),
     .blk(fr_blk), .dout(fr_dout), .dout_oe(fr_dout_oe), .on(fr_on), .armed(fr_armed)
 );
@@ -634,10 +639,11 @@ rom_sense rsense (
     .clk(clk), .por(por), .sys_reset(sys_reset),
     .key_vvod(key_vvod), .key_sbr(key_sbr),
     .memrd(memrd), .din(shd_in), .ours(kv_on | fr_blk), .en(boot_kbd),
-    .vvod_boot(kb_boot), .listen(kb_listen), .diag(kb_diag)
+    .vvod_boot(kb_boot), .listen(kb_listen), .rom_live(kb_rom_live), .diag(kb_diag)
 );
 end else begin : g_no_kbd_rst
     assign kb_boot = 1'b0; assign kb_diag = 64'd0; assign kb_listen = 1'b0;
+    assign kb_rom_live = 1'b0;
 end endgenerate
 // -------------------------------------------------------------------- ВИ53
 // Таймер машины, собранный прослушиванием записей в порты 08h..0Bh (и разряд
@@ -752,12 +758,14 @@ generate if (VIDEO) begin : g_video
     wire        r_scroll_ok;
     wire        rd_stb;  wire [1:0] rd_kind; wire [7:0] rd_a, rd_b;  // растр -> журнал портов
     wire [12:0] ev_ra;   wire [17:0] ev_q;
-    wire [11:0] sn_ra;   wire [17:0] sn_q;
+    wire [12:0] sn_ra;   wire [8:0]  sn_q;
+    wire [8:0]  j_line, j_fbl, j_fbp;  wire [15:0] j_vml, j_vmp;   // кольцо журнала
     wire        f_tog;   wire [7:0] f_row;  wire [8:0] f_done;
     wire        lb_we;   wire [11:0] lb_wa; wire [7:0] lb_wd;
     wire [7:0]  f_lbrow, f_scr;
     wire        p_m60;   wire [7:0] p_lockerr;
     wire        p_ce;                // разрешение такта проигрывателя (50 Гц -- через такт)
+    wire [9:0]  p_vrem;              // строк показа до frame_tog (vid_fetch.v)
     // строка 0 машины -- в домен точки переключаемым признаком
     reg         mf_tog = 1'b0;
     always @(posedge clk) if (r_lstb && r_line == 9'd0) mf_tog <= ~mf_tog;
@@ -777,6 +785,7 @@ generate if (VIDEO) begin : g_video
         .clk(clk), .reset(por), .iowr_reg(iowr_reg), .port(bus_addr), .din(shd_in),
         .rast_ok(r_ok), .line_stb(r_lstb), .line_no(r_line), .pos(r_pos),
         .frame_stb(r_fstb), .scroll(v_scroll),
+        .rec_line(j_line), .fb_last(j_fbl), .fb_prev(j_fbp), .vm_last(j_vml), .vm_prev(j_vmp),
         .rclk(clk_vga), .rce(p_ce), .ev_raddr(ev_ra), .ev_q(ev_q), .sn_raddr(sn_ra), .sn_q(sn_q),
         .ovf(v_ovf), .pal_ra(pal_ra), .pal_rd(pal_rd), .lg_hold(pal_busy),
         .rd_stb(rd_stb), .rd_kind(rd_kind), .rd_a(rd_a), .rd_b(rd_b)
@@ -786,18 +795,21 @@ generate if (VIDEO) begin : g_video
         .ras_n(ras_n), .chtzu_n(chtzu_n), .zpzu_n(zpzu_n), .chtvv_n(chtvv_n),
         .zpvv_n(zpvv_n), .strob(strob), .shd(shd_in),
         .frame_tog(f_tog), .cur_row(f_row), .fetched(f_done), .scroll(f_scroll),
+        .vrem(p_vrem), .m60(p_m60),
         .lb_we(lb_we), .lb_waddr(lb_wa), .lb_wdata(lb_wd),
-        .addr_cpc(addr_cpc), .addr_mrc(addr_mrc), .addr_src(addr_src),
+        .addr_cpc(addr_cpc), .cpc_d0(addr_cpc_d0), .cpc_d1(addr_cpc_d1),
+        .addr_mrc(addr_mrc), .addr_src(addr_src),
         .sram_oe_n(sram_oe_n), .rd_active(vid_rd), .aborts(v_aborts),
         .lb_row(f_lbrow), .scroll_now(f_scr)
     );
     vid_play play (
         .clk(clk_vga), .mode60(vga60), .mframe_tog(mf_tog),
         .ev_raddr(ev_ra), .ev_q(ev_q), .sn_raddr(sn_ra), .sn_q(sn_q),
+        .rec_line(j_line), .fb_last(j_fbl), .fb_prev(j_fbp), .vm_last(j_vml), .vm_prev(j_vmp),
         .wclk(clk), .lb_we(lb_we), .lb_waddr(lb_wa), .lb_wdata(lb_wd),
         .frame_tog(f_tog), .cur_row(f_row), .fetched(f_done),
         .vga_r(vga_r), .vga_g(vga_g), .vga_b(vga_b), .vga_hs(vga_hs), .vga_vs(vga_vs),
-        .underrun(v_underrun), .m60_o(p_m60), .ce_o(p_ce), .lock_err_o(p_lockerr)
+        .underrun(v_underrun), .m60_o(p_m60), .vrem_o(p_vrem), .ce_o(p_ce), .lock_err_o(p_lockerr)
     );
     scr_buf scr (
         .clk(clk), .por(por),
@@ -829,6 +841,7 @@ end else begin : g_novideo
     assign vga_r = 3'd0; assign vga_g = 3'd0; assign vga_b = 2'd0;
     assign vga_hs = 1'b0; assign vga_vs = 1'b0;
     assign addr_cpc = 1'b0; assign addr_mrc = 1'b0; assign addr_src = 1'b0;
+    assign addr_cpc_d0 = 1'b0; assign addr_cpc_d1 = 1'b0;
     assign sram_oe_n = 1'b1; assign vid_rd = 1'b0;
     assign sr_byte = 8'h00;
     assign vd_underrun = 8'd0; assign vd_aborts = 8'd0; assign vd_ovf = 8'd0;

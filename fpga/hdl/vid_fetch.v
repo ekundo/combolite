@@ -73,6 +73,28 @@
 // при смене прокрутки низ кадра может опоздать -- запасной режим.
 // EARLY_SEEK = 0 -- подвод только с начала кадра.
 //
+// ПОДВОД -- ТОЛЬКО ЕСЛИ УСПЕЕТ. В 60 Гц кадр показа с машиной не связан, и
+// прокрутка может смениться за миг до frame_tog. Раньше кадр брал её на
+// frame_tog и подводил счётчик уже в своём начале -- до 2,6 мс, кадр опаздывал
+// на десятки строк, и на VGA шли старые строки кольца. Теперь подвод начинается, только если его
+// счета (60 нс каждый) уложатся в строки, оставшиеся до frame_tog (vrem от
+// проигрывателя: строка 26,4 мкс в 60 Гц, 31,95 в 50). Кадр начинается с той
+// прокруткой, к которой счётчик уже стоит (scr_pos); новая ждёт следующего
+// кадра. Если она не прошла три кадра подряд (шина так плотна, что выборка
+// кончает кадр поздно), кадр начинается с неё по-старому.
+//
+// ПОДВОД -- ВДВОЕ ЧАЩЕ. Такт 590-го уходит на вывод через
+// DDR-регистр ODDRXE (rev4_top.v): две половины такта 50 МГц, шаг 10 нс.
+// Паспорт Nexperia 74HC590 при 4,5 В, -40..+85: импульс CPC/CPR от 25 нс,
+// fmax от 26 МГц, CPC -> CPR от 25 нс. При подводе счётчика (S_STEP) импульс
+// -- 30 нс вверх, 30 вниз, 60 нс на счёт (16,7 МГц); худший подвод 32 640
+// счетов -- 1,96 мс, и он укладывается в окно 60 Гц между концом выборки и
+// началом кадра даже при самой плотной шине. Чтение не меняется: там на обе
+// половины идёт одно значение, и вывод ведёт себя как обычный регистр. Чтобы
+// задержка была та же, на ODDR идёт СЛЕДУЮЩЕЕ значение такта (cpc_nx): по
+// даташиту MachXO2 (2.7.2) D0 выходит в высокую половину того такта, которым
+// защёлкнут, D1 -- в низкую.
+//
 // ОТБОЙ -- ЖИВЫМИ СИГНАЛАМИ, комбинационно. /OE статики на плате -- ещё и
 // ~ЧТЗУ машины, так что выбранная DD6B вышла бы на шину на ЛЮБОМ её чтении;
 // /CE1, /OE и адрес от счётчиков снимаются с первым же сигналом машины, не
@@ -107,6 +129,8 @@ module vid_fetch #(
     input  wire [7:0] cur_row,             // строка картинки на экране сейчас
     output reg  [8:0] fetched = 9'd0,      // строк кадра готово
     input  wire [7:0] scroll,
+    input  wire [9:0] vrem,                // строк показа до frame_tog
+    input  wire       m60,                 // 60 Гц: строка показа 26,4 мкс, иначе 31,95
     // строчный буфер
     output reg        lb_we = 1'b0,
     output reg  [RING_BITS+6:0] lb_waddr = 0,  // {строка, слой 2, колонка 5}
@@ -115,6 +139,8 @@ module vid_fetch #(
     output wire [7:0] scroll_now,          // прокрутка этого кадра выборки
     // к плате
     output reg        addr_cpc = 1'b0,
+    output wire       cpc_d0,              // на ODDRXE: высокая половина такта
+    output wire       cpc_d1,              //             низкая половина
     output reg        addr_mrc = 1'b0,
     output wire       addr_src,
     output wire       sram_oe_n,
@@ -160,25 +186,64 @@ wire slot = q_s[1] && idle >= IDLE_MIN;
 reg  [2:0] fr_s = 3'b000;
 reg        fr_seen = 1'b0;
 reg  [7:0] cr1 = 8'd0, cr2 = 8'd0, cr = 8'd0;
+reg  [9:0] vr1 = 10'd0, vr2 = 10'd0, vr = 10'd0;
+reg  [1:0] m6_s = 2'b00;
 always @(posedge clk) begin
     fr_s <= {fr_s[1:0], frame_tog};
     cr1  <= cur_row;
     cr2  <= cr1;
     if (cr1 == cr2) cr <= cr2;
+    vr1  <= vrem;
+    vr2  <= vr1;
+    if (vr1 == vr2) vr <= vr2;
+    m6_s <= {m6_s[0], m60};
 end
 
 // ------------------------------------------------------------- счётчики
 reg  [14:0] cnt = 15'd0;                  // что сейчас в 590-х
 reg  [14:0] tgt = 15'd0;
 reg  [7:0]  scr_l = 8'd0;
+reg  [7:0]  scr_pos = ROW_INV ? 8'hFF : 8'h00;  // к началу кадра с какой прокруткой стоит счётчик
+reg  [7:0]  scr_pend = 8'd0;              // к какой идёт подвод
+reg  [1:0]  refuse = 2'd0;                // кадров подряд без новой прокрутки
+reg         at256 = 1'b0;                 // такт, когда кадр только что дочитан
+reg         seen256 = 1'b0;
 reg  [8:0]  r = 9'd0;                     // строка кадра, которую выбираем
 reg  [7:0]  nread = 8'd0;
 
 wire [7:0]  mem_row = scr_l - r[7:0];
 wire [7:0]  row_c   = ROW_INV ? ~mem_row : mem_row;
 wire [8:0]  lim     = {1'b0, cr} + ((9'd1 << RING_BITS) - 9'd1);  // дальше некуда
-// начало следующего кадра при той прокрутке, что машина взяла сейчас
-wire [14:0] nxt_tgt = {ROW_INV ? ~scroll : scroll, 7'd0};
+// Начало следующего кадра при той прокрутке, что машина взяла сейчас, и успеет
+// ли подвод к нему -- КОНВЕЙЕРОМ в четыре такта: одним тактом от выбора
+// прокрутки в vid_raster до решения выходило 20 нс (отчёт Diamond).
+// Прокрутка и цель идут по конвейеру вместе, решение -- всегда о той цели, с
+// которой оно посчитано. Счёт cnt в S_IDLE стоит; на первом такте после
+// дочитанного кадра длина подвода может быть от счёта на единицу раньше --
+// это лишние 60 нс в оценке, не больше.
+// Бюджет -- 440 счетов по 60 нс на строку показа (26,4 мкс, 60 Гц) в обоих
+// режимах: для 50 Гц (строка 31,95 мкс) это занижено на 17 %, а окно там и
+// так шире худшего подвода. vr * 440 = vr * 512 - vr * 64 - vr * 8.
+reg  [7:0]  scr_q1 = 8'd0, scr_q2 = 8'd0, scr_q3 = 8'd0;
+reg  [14:0] tgt_q2 = 15'd0, tgt_q3 = 15'd0;
+reg  [14:0] seek_q3 = 15'd0;
+reg  [18:0] bud_q3 = 19'd0;
+reg         fits_q4 = 1'b0;
+reg  [14:0] nxt_tgt = 15'd0;               // цель, о которой fits_q4
+reg  [7:0]  nxt_scr = 8'd0;                // и её прокрутка
+always @(posedge clk) begin
+    scr_q1  <= scroll;
+    scr_q2  <= scr_q1;
+    tgt_q2  <= {ROW_INV ? ~scr_q1 : scr_q1, 7'd0};
+    scr_q3  <= scr_q2;
+    tgt_q3  <= tgt_q2;
+    seek_q3 <= (tgt_q2 < cnt) ? tgt_q2 : tgt_q2 - cnt;   // через сброс, если цель позади
+    bud_q3  <= {vr, 9'd0} - {3'd0, vr, 6'd0} - {6'd0, vr, 3'd0};
+    nxt_scr <= scr_q3;
+    nxt_tgt <= tgt_q3;
+    fits_q4 <= {4'd0, seek_q3} + 19'd64 < bud_q3;
+end
+wire        fits    = fits_q4;
 
 localparam [2:0] S_IDLE = 3'd0, S_SEEK = 3'd1, S_RST = 3'd2, S_WAIT = 3'd3,
                  S_RD = 3'd4, S_STEP = 3'd5, S_DONE = 3'd6;
@@ -186,6 +251,7 @@ reg  [2:0] st = S_IDLE;
 reg  [3:0] rc = 4'd0;
 reg  [1:0] rs = 2'd0;                     // шаги сброса
 reg        cpc_hold = 1'b0;               // addr_cpc сменился тактом раньше -- ждать
+reg  [1:0] fph = 2'd0;                    // фаза быстрого импульса подвода: 0 -- нет
 reg        pre = 1'b0;                    // идёт подвод к следующему кадру: без чтений
 reg        rd_on = 1'b0, oe_on = 1'b0;
 reg  [7:0] tmp = 8'd0;
@@ -195,20 +261,67 @@ assign rd_active = rd_on & quiet_raw;
 assign addr_src  = rd_on & quiet_raw;
 assign sram_oe_n = ~(oe_on & quiet_raw);
 
+// --------------------------------------------- такт 590-го: следующее значение
+// Те же условия, что ниже в автомате; автомат только запоминает cpc_nx.
+wire fr_new  = fr_s[2] != fr_seen && (st == S_IDLE || st == S_WAIT);
+wire rd_ok   = q_s[1] && !(rc == RD_SAMPLE + 4'd1 && !q_s[0]);  // без отбоя
+wire step_go = st == S_STEP && !fr_new && !reset;
+// быстрый импульс: начать (внизу, выдержан) или продолжить начатый
+wire f_start = step_go && fph == 2'd0 && cnt != tgt && !addr_cpc && !cpc_hold;
+wire f_on    = f_start || (step_go && fph != 2'd0);
+reg  cpc_nx;
+always @(*) begin
+    cpc_nx = addr_cpc;
+    if (reset) cpc_nx = 1'b0;
+    else if (!fr_new) case (st)
+        S_RST:
+            if (rs == 2'd0) begin if (!addr_cpc && !cpc_hold) cpc_nx = 1'b1; end
+            else if (rs == 2'd3) begin if (!cpc_hold) cpc_nx = 1'b0; end
+        S_STEP:
+            // поднятый с чтения такт сначала опустить обычным шагом (перенос,
+            // без счёта), дальше -- быстрые импульсы, после них такт внизу
+            if (fph == 2'd0 && cnt != tgt && addr_cpc && !cpc_hold) cpc_nx = 1'b0;
+        S_RD: begin
+            if (!addr_cpc && !cpc_hold) cpc_nx = 1'b1;
+            if (rd_ok && rc == RD_SAMPLE + 4'd1) cpc_nx = 1'b0;
+        end
+        default: ;
+    endcase
+end
+// половины такта на ODDR: импульс 30/30 нс -- (1,1), (1,0), (0,0)
+assign cpc_d0 = f_on ? (f_start || fph == 2'd1) : cpc_nx;
+assign cpc_d1 = f_on ? f_start                  : cpc_nx;
+
 always @(posedge clk) begin
     lb_we <= 1'b0;
     cpc_hold <= 1'b0;
+    addr_cpc <= cpc_nx;                       // уровень такта -- только отсюда
     if (reset) begin
-        st <= S_RST; rs <= 2'd0; addr_cpc <= 1'b0; addr_mrc <= 1'b1; pre <= 1'b0;
+        st <= S_RST; rs <= 2'd0; addr_mrc <= 1'b1; pre <= 1'b0; fph <= 2'd0;
         rd_on <= 1'b0; oe_on <= 1'b0;
         fr_seen <= fr_s[2]; r <= 9'd256; fetched <= 9'd0;
+        scr_pos <= ROW_INV ? 8'hFF : 8'h00; refuse <= 2'd0; seen256 <= 1'b0;
     end
     else begin
+        // at256: первый такт S_IDLE с дочитанным кадром -- самый ранний
+        // момент подвода; смену, известную к нему, подводим сразу, ждать
+        // нечего: следующий кадр дал бы то же время.
+        at256 <= 1'b0;
+        if (st == S_IDLE && r == 9'd256 && !seen256) begin at256 <= 1'b1; seen256 <= 1'b1; end
         // новый кадр: сначала, с прокруткой этого кадра. Идущий цикл не рвём --
         // строка дочитается в старое место кольца и будет перезаписана.
         if (fr_s[2] != fr_seen && (st == S_IDLE || st == S_WAIT)) begin
             fr_seen  <= fr_s[2];
-            scr_l    <= scroll;
+            seen256  <= 1'b0;
+            // полный кадр -- 32 768 счетов, и счётчик вернётся к началу этого
+            if (scr_pos == nxt_scr || refuse == 2'd3) begin
+                scr_l  <= nxt_scr; scr_pos <= nxt_scr;
+                refuse <= 2'd0;
+            end
+            else begin
+                scr_l  <= scr_pos;
+                refuse <= refuse + 2'd1;
+            end
             r        <= 9'd0;
             fetched  <= 9'd0;
             st       <= S_IDLE;
@@ -216,10 +329,10 @@ always @(posedge clk) begin
         else case (st)
         S_IDLE:
             if (r != 9'd256 && r <= lim) st <= S_SEEK;
-            else if (EARLY_SEEK && r == 9'd256 && nxt_tgt != cnt) begin
+            else if (EARLY_SEEK && r == 9'd256 && nxt_tgt != cnt && (fits || at256)) begin
                 // кадр дочитан, а машина уже взяла прокрутку следующего --
                 // подвести счётчик сейчас, читать строки -- с началом кадра
-                tgt <= nxt_tgt; pre <= 1'b1;
+                tgt <= nxt_tgt; pre <= 1'b1; scr_pend <= nxt_scr;
                 if (nxt_tgt < cnt) begin rs <= 2'd0; st <= S_RST; end
                 else st <= S_STEP;
             end
@@ -237,30 +350,37 @@ always @(posedge clk) begin
         S_RST:
             case (rs)
             2'd0: if (addr_cpc) begin addr_mrc <= 1'b1; rs <= 2'd1; end
-                  else if (!cpc_hold) begin addr_cpc <= 1'b1; cpc_hold <= 1'b1; end
+                  else if (!cpc_hold) cpc_hold <= 1'b1;       // такт вверх (cpc_nx)
             2'd1: rs <= 2'd2;                         // MRC -- два такта, 40 нс
             2'd2: begin addr_mrc <= 1'b0; rs <= 2'd3; end
             default:
-                if (!cpc_hold) begin
-                    addr_cpc <= 1'b0; cpc_hold <= 1'b1;
+                if (!cpc_hold) begin                 // такт вниз (cpc_nx)
+                    cpc_hold <= 1'b1;
                     cnt <= 15'd0; st <= S_STEP;
                 end
             endcase
         S_STEP:                               // счёт до начала строки, потом чтения
-            if (cnt == tgt) begin
+            if (fph != 2'd0)                  // идёт быстрый импульс: (1,0), потом (0,0)
+                fph <= (fph == 2'd2) ? 2'd0 : fph + 2'd1;
+            else if (cnt == tgt) begin
                 st  <= pre ? S_IDLE : S_WAIT; // такт может остаться поднятым: выходы = cnt
+                if (pre) scr_pos <= scr_pend;
                 pre <= 1'b0;
             end
-            else if (!cpc_hold) begin         // 12,5 МГц: 40 нс вверх, 40 вниз
-                addr_cpc <= ~addr_cpc; cpc_hold <= 1'b1;
-                if (addr_cpc) cnt <= cnt + 15'd1; // спад -- новый счёт на выходах
+            else if (!cpc_hold) begin
+                cpc_hold <= 1'b1;
+                if (addr_cpc) cnt <= cnt + 15'd1;   // спад поднятого с чтения: перенос
+                else begin                          // быстрый импульс 30/30 нс: счёт
+                    fph <= 2'd1;
+                    cnt <= cnt + 15'd1;
+                end
             end
         S_WAIT:
             if (slot) begin rd_on <= 1'b1; oe_on <= 1'b1; rc <= 4'd0; st <= S_RD; end
         S_RD: begin
             rc <= rc + 4'd1;
             // фронт заранее: выходов не трогает, шагом будет спад после проверки
-            if (!addr_cpc && !cpc_hold) begin addr_cpc <= 1'b1; cpc_hold <= 1'b1; end
+            if (!addr_cpc && !cpc_hold) cpc_hold <= 1'b1;     // фронт (cpc_nx)
             if (!q_s[1] || (rc == RD_SAMPLE + 4'd1 && !q_s[0])) begin  // отбой
                 rd_on <= 1'b0; oe_on <= 1'b0; st <= S_WAIT;     // такт не трогаем
                 aborts <= (&aborts) ? aborts : aborts + 8'd1;
@@ -276,8 +396,7 @@ always @(posedge clk) begin
                 nread    <= nread + 8'd1;
                 cnt      <= cnt + 15'd1;
                 tgt      <= cnt + 15'd1;
-                addr_cpc <= 1'b0;               // шаг: спад -- здесь (фронт поднят заранее)
-                cpc_hold <= 1'b1;
+                cpc_hold <= 1'b1;               // шаг: спад (cpc_nx), фронт поднят заранее
                 rc       <= 4'd0;
                 if (nread == 8'd127) begin      // строка целиком
                     rd_on <= 1'b0; oe_on <= 1'b0;

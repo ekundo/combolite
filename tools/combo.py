@@ -22,10 +22,11 @@
                                                 всё включено; fdc_rdy=34|index|always
     python3 tools/combo.py set fdd=shugart|pc     шлейф дисковода: прямой (A: 10, B: 12) или от ПК с
                                                 перекруткой (A: 12 -- Gotek на S1, B: 16 -- 3,5" на DS0)
-    python3 tools/combo.py set boot=rom|power|vvod
-                                                загрузка машины: из ПЗУ, подставным
-                                                загрузчиком при включении, и после
-                                                каждого ВВОД с клавиатуры тоже
+    python3 tools/combo.py set boot=rom|boot26  загрузчик: ПЗУ «Вектора» или подставной
+                                                BOOT26 (при включении и после ВВОД)
+    python3 tools/combo.py set autostart=on|off автозапуск загруженного: на мигании
+                                                РУС/ЛАТ в конце загрузки плата сама
+                                                нажмёт СБР -- для обоих загрузчиков
     python3 tools/combo.py keys vvod|sbr|release нажать ВВОД (из ПЗУ), СБР (без ПЗУ), отпустить
     python3 tools/combo.py loader arm|boot|off  подставной загрузчик: взвести, взвести и СБР, снять
     python3 tools/combo.py screen shot.png [palette=00..ff x16]
@@ -34,8 +35,6 @@
                                                 palette= -- свои 16 байт BBGGGRRR
     python3 tools/combo.py fdcwatch [secs=60]   опрос ВГ93: команда, состояние, дорожка, сектор;
                                                 за секунду -- байты, адресные метки, импульсы, индексы
-    python3 tools/combo.py palog [raw.bin]      журнал последних 128 записей машины в порты
-                                                палитры и порта B: где стоял луч (fpga/hdl/vid_rec.v)
     python3 tools/combo.py fpga --detect        опознать ПЛИС по SSPI
     python3 tools/combo.py fpga file.jed        залить битстрим во флеш ПЛИС: плата пишет сама
                                                 по SSPI (секунды).
@@ -214,10 +213,17 @@ def set_arg(k, v):
             raise ValueError('vi53: on или off')
         return ['vi53=%d' % (v == 'on')]
     if k == 'boot':
+        if v == 'boot26':
+            v = 'vvod'
         if v not in BOOT:
-            raise ValueError('boot: %s' % '|'.join(BOOT))
+            raise ValueError('boot: rom|boot26')
         return ['boot=%d' % BOOT.index(v)]
-    raise ValueError('не знаю настройки %s: off, fdc_rdy, fdc_pc, fdd, vga, vi53, boot' % k)
+    if k == 'autostart':
+        if v not in ('on', 'off'):
+            raise ValueError('autostart: on или off')
+        return ['autostart=%d' % (v == 'on')]
+    raise ValueError('не знаю настройки %s: off, fdc_rdy, fdc_pc, fdd, vga, vi53, boot, '
+                     'autostart' % k)
 
 
 # Шлейф дисковода, firmware/board.h fdd_cable: по номеру.
@@ -226,10 +232,10 @@ FDD_CABLE_RU = ['прямой (Шугарт: A: 10, B: 12, мотор 16)',
                 'от ПК с перекруткой (A: 12, B: 16, мотор 10)']
 
 
-# Загрузка машины, firmware/board.h BOOT_*: по номеру.
+# Загрузчик, firmware/board.h BOOT_*: по номеру. 'power' (BOOT26 только при
+# включении) оставлен ради старых настроек; boot26 -- это 'vvod'.
 BOOT = ['rom', 'power', 'vvod']
-BOOT_RU = ['из ПЗУ', 'подставным загрузчиком при включении',
-           'подставным при включении и после ВВОД']
+BOOT_RU = ['ПЗУ «Вектора»', 'BOOT26 только при включении', 'подставной BOOT26']
 KIND_RU = {'unknown': 'не разобран', 'own': 'свой', 'not_vvod': 'не ВВОД',
            'vvod': 'ВВОД'}
 
@@ -282,54 +288,18 @@ def screen_png(frame, palette, m512=False):
             chunk(b'IEND', b''))
 
 
-def print_palog(buf):
-    """Журнал записей в порты (fpga/hdl/vid_rec.v, «журнал записей»): палитра, порт
-    B, номер следующей записи (17), счёт кадров (18), с 1024 -- 128 записей по
-    8 байт, от старой к новой."""
-    print('палитра регистратора: %s; порт B %02x; кадр %d'
-          % (buf[:16].hex(' '), buf[16], buf[18]))
-    wp = buf[17] & 0x7F
-    print('  №   кадр строка такт  порт знач  бордюр 512  место         ячейка у нас')
-    for k in range(128):
-        e = buf[1024 + 8 * ((wp + k) & 0x7F):][:8]
-        if not any(e):
-            continue
-        val, fl, pos, ln_lo, ln_hi, frm, port, seq = e
-        line = ln_lo | (ln_hi & 1) << 8
-        in_pic, is_ctl, is_pb, pb = fl >> 7 & 1, fl >> 6 & 1, fl >> 5 & 1, fl & 0x1F
-        if port >= 0xF0:
-            kind = port & 3
-            what = ['разрыв S', 'ОПОРА', 'INTA', '?'][kind]
-            cell = (['S %d после %d' % (val, fl), 'S %d, строка была %d' % (val, fl),
-                     'строка %d, видеоцикл %d' % (val, fl), ''][kind])
-            print('%3d %5d %5d %5d   %02x               %-12s  %s' % (seq, frm, line, pos, port, what, cell))
-            continue
-        if is_ctl:
-            what = 'ВВ55 упр.'
-            cell = 'порт B -> 0'
-        elif is_pb:
-            what = 'порт B'
-            cell = 'бордюр %d%s' % (val & 15, ', 512' if val & 0x10 else '')
-        else:
-            what = 'палитра'
-            cell = 'под лучом' if in_pic else '%d' % (pb & 15)
-        flags = ('' if ln_hi & 0x80 else ' строка?') + ('' if ln_hi & 0x40 else ' растр?')
-        print('%3d %5d %5d %5d   %02x   %02x   %5d %3s  %-12s  %s%s  %s'
-              % (seq, frm, line, pos, port, val, pb & 15, '512' if pb & 0x10 else '',
-                 'КАРТИНКА' if in_pic else 'вне', cell, flags, what))
-
-
 def print_board(d):
     s = d.get('settings', {})
     off = [n for i, n in enumerate(DEVS) if s.get('dev_off', 0) >> i & 1]
     rdy = {v: k for k, v in RDY.items()}.get(s.get('fdc_rdy'), '?')
     print('настройки: выключено %s; готовность ВГ93 %s; предкомпенсация %d%s; '
-          'шлейф %s; VGA %s Гц; ВИ53 %s; загрузка %s'
+          'шлейф %s; VGA %s Гц; ВИ53 %s; загрузчик %s; автозапуск %s'
           % (','.join(off) or 'ничего', rdy, s.get('fdc_pc', 0) & 15,
              ' с 44-й дорожки' if s.get('fdc_pc', 0) & 16 else '',
              FDD_CABLE_RU[s.get('fdd_cable', 0)] if s.get('fdd_cable', 0) < 2 else '?',
              '60' if s.get('vga60') else '50', 'наш' if s.get('vi53') else 'машины',
-             BOOT_RU[s['boot']] if s.get('boot', 0) < len(BOOT_RU) else '?'))
+             BOOT_RU[s['boot']] if s.get('boot', 0) < len(BOOT_RU) else '?',
+             'выкл' if s.get('autostart') == 0 else 'вкл'))
     if not d.get('present'):
         print('ПЛИС: блоков 4 и 5 нет -- старый битстрим или ПЛИС молчит; '
               'настройки зальются, когда она ответит')
@@ -368,7 +338,8 @@ def print_board(d):
                  ' (наш СБР)' if k['kind'] == 'own' else '',
                  ' '.join(k['first'][i:i + 2] for i in range(0, 10, 2)),
                  format(k['same'], '08b')[::-1], k['events'], k['vvod'],
-                 '; ждём своего СБР' if k['pending'] else ''))
+                 '; ждём своего СБР' if k['pending'] else '') +
+              ('; работает ПЗУ' if k.get('rom_live') else ''))
     if f.get('fdc'):
         fd = d['fdd']
         print('дисковод: %s; мотор %s; %s%s%s%s'
@@ -721,17 +692,6 @@ def main():
                           % (dd['data_reads'], dd['marks'], dd['pulses_256'] * 256, dd['index']))
                 base = c; tb = now
             time.sleep(0.2)
-        return 0
-
-    if cmd == 'palog':
-        code, out = b.go('GET', '/api/palog')
-        if code != 200 or len(out) != 2048:
-            print('%d: %s' % (code, out[:200].decode('utf-8', 'replace').strip()))
-            return 1
-        if len(args) > 1:
-            with open(args[1], 'wb') as f:
-                f.write(out)
-        print_palog(out)
         return 0
 
     if cmd == 'screen':

@@ -56,6 +56,7 @@ module rom_sense #(
     input  wire        en,             // после ВВОД -- подставной загрузчик
     output reg         vvod_boot = 1'b0,  // импульс: взвести и нажать СБР
     output wire        listen,         // ждём первых чтений: буфер ШД -- к ПЛИС
+    output reg         rom_live = 1'b0,// после ВВОД работает ПЗУ: до первого сброса
     output wire [63:0] diag            // блок 6, см. конец файла
 );
 
@@ -134,12 +135,18 @@ reg  [3:0]  n_ev = 4'd0, n_vvod = 4'd0;
 
 wire bad = foreign;
 
+// ПЗУ ЖИВО (rom_live): сброс был ВВОД -- свой или узнанный с клавиатуры, -- и
+// с тех пор сброса не было. Всё, что процессор исполняет в это время, -- код
+// ПЗУ: выключает его только сброс. Этим пользуется автозапуск после загрузчика
+// ПЗУ (fakerom.v): мигание РУС/ЛАТ здесь -- знак загрузчика, а не программы.
 always @(posedge clk) begin
     vvod_boot <= 1'b0;
     if (por) begin
         rom_ok <= 1'b0; pend <= 1'b0; kind <= K_NONE; last_ovv <= 1'b0;
-        n_ev <= 4'd0; n_vvod <= 4'd0;
+        n_ev <= 4'd0; n_vvod <= 4'd0; rom_live <= 1'b0;
     end
+    else if (sys_reset)
+        rom_live <= 1'b0;
     else if (done) begin
         n_ev <= n_ev + 4'd1;
         if (s_own) begin
@@ -147,15 +154,17 @@ always @(posedge clk) begin
             last_ovv <= s_ovv;
             pend     <= 1'b0;
             if (s_ovv & ~bad) begin
-                rom    <= sig;
-                rom_ok <= 1'b1;
+                rom      <= sig;
+                rom_ok   <= 1'b1;
+                rom_live <= 1'b1;
             end
         end
         else if (!rom_ok || bad)
             kind <= K_NONE;
         else if (sig == rom) begin
-            kind   <= K_VVOD;
-            n_vvod <= n_vvod + 4'd1;
+            kind     <= K_VVOD;
+            rom_live <= 1'b1;
+            n_vvod   <= n_vvod + 4'd1;
             if (en & ~pend) begin
                 vvod_boot <= 1'b1;
                 pend      <= 1'b1;
@@ -168,7 +177,7 @@ end
 
 // ------------------------------------------------------- диагностика, блок 6
 //   0  {подпись ПЗУ есть, ждём своего сброса после узнанного ВВОД,
-//       своё последнее -- наш ВВОД, ждём чтений после сброса, 0, 0,
+//       своё последнее -- наш ВВОД, ждём чтений после сброса, 0, ПЗУ живо,
 //       вид последнего: 0 не разобран, 1 свой, 2 не ВВОД, 3 ВВОД}
 //   1  какие из первых восьми чтений совпали с подписью: разряд k -- чтение k
 //   2  {узнано ВВОД, событий} -- по четыре разряда, по кругу
@@ -184,7 +193,7 @@ always @(*) begin
 end
 
 assign diag = {sig[39:0], n_vvod, n_ev, same,
-               {rom_ok, pend, last_ovv, rd_on, 2'b00, kind}};
+               {rom_ok, pend, last_ovv, rd_on, 1'b0, rom_live, kind}};
 
 endmodule
 

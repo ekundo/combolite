@@ -617,12 +617,15 @@ export const RU = {
     'Плата поднимет свою сеть combolite-XXXX; настроить её снова можно будет только с телефона рядом или шнурком.',
   'The board forgot the network and restarts into setup: connect to its own network combolite-XXXX and open http://192.168.4.1/':
     'Плата забыла сеть и перезагружается в настройку: подключитесь к её сети combolite-XXXX и откройте http://192.168.4.1/',
-  'the machine boots':            'загрузка машины',
-  'from ROM':                     'из ПЗУ',
-  'via the boot loader at power-on': 'подставным загрузчиком при включении',
-  'via the boot loader, also after VVOD': 'подставным, и после ВВОД',
-  'after VVOD on the keyboard the board presses SBR itself':
-                                  'после ВВОД с клавиатуры плата сама нажмёт СБР',
+  'loader':                       'загрузчик',
+  'the machine’s ROM':            'ПЗУ «Вектора»',
+  'BOOT26 from the board':        'подставной BOOT26',
+  'BOOT26, only at power-on':     'BOOT26, только при включении',
+  'BOOT26 from the board: at power-on and after VVOD, without replacing the ROM':
+                                  'BOOT26 с платы: при включении и после ВВОД, без замены ПЗУ',
+  'start the loaded program':     'автозапуск загруженного',
+  'when the loader blinks RUS/LAT at the end, the board presses SBR itself':
+                                  'когда загрузчик в конце мигает РУС/ЛАТ, плата сама нажмёт СБР',
   'boot loader':                  'подставной загрузчик',
   'window open':                  'окно открыто',
   'armed':                        'взведён',

@@ -45,6 +45,7 @@ static SemaphoreHandle_t ctl_done;
  * только отметки, а работа -- в цикле задачи. */
 static uint8_t new_addr;
 static usb_device_handle_t gone;
+static uint8_t last_btn;                    /* кнопки последнего отчёта */
 
 static void client_cb(const usb_host_client_event_msg_t *m, void *arg)
 {
@@ -64,8 +65,9 @@ static void in_cb(usb_transfer_t *t)
     if (t->status == USB_TRANSFER_STATUS_COMPLETED && t->actual_num_bytes >= 3) {
         const uint8_t *r = t->data_buffer;
         /* Кнопки -- три младших разряда: у интерфейса машины их три. */
+        last_btn = r[0] & 0x07;
         if (board_features() & BF_MOUSE)
-            combo_mouse(r[0] & 0x07, (int8_t)r[1], (int8_t)r[2],
+            combo_mouse(last_btn, (int8_t)r[1], (int8_t)r[2],
                         t->actual_num_bytes >= 4 ? (int8_t)r[3] : 0);
     }
     /* Отменённую и ушедшую с устройством не перезапускаем: мышь вынули. */
@@ -198,13 +200,33 @@ static void host_task(void *arg)
     }
 }
 
+/* ПРИСУТСТВИЕ -- РАЗ В СЕКУНДУ. Мышь в ПЛИС «есть» с первого отчёта и до
+ * C_MOUSE_OFF, а перезапуск ПЛИС (перезаливка, включение) это забывает: до
+ * первого движения порт D4h не отвечает. Программа, которая проверила мышь
+ * на старте в это время, решала, что мыши нет, и переподключение не помогало
+ * (помогал только ВВОД+БЛК после того, как мышь сдвинули). Поэтому, пока мышь открыта, раз в секунду -- отчёт без движения с
+ * текущими кнопками: зажатую кнопку он не отпускает, а присутствие
+ * восстанавливает. Отчёты идут из этой же задачи (in_cb зовётся из
+ * handle_events), так что с ними не пересекается. */
 static void client_task(void *arg)
 {
+    TickType_t beat = 0;
+
     (void)arg;
     for (;;) {
         usb_host_client_handle_events(client, pdMS_TO_TICKS(100));
-        if (new_addr) { uint8_t a = new_addr; new_addr = 0; open_mouse(a); }
+        if (new_addr) {
+            uint8_t a = new_addr;
+            new_addr = 0;
+            last_btn = 0;
+            open_mouse(a);
+            beat = xTaskGetTickCount() - pdMS_TO_TICKS(1000);   /* сразу */
+        }
         if (gone) { if (gone == dev) close_mouse(); gone = 0; }
+        if (dev && (TickType_t)(xTaskGetTickCount() - beat) >= pdMS_TO_TICKS(1000)) {
+            beat = xTaskGetTickCount();
+            if (board_features() & BF_MOUSE) combo_mouse(last_btn, 0, 0, 0);
+        }
     }
 }
 

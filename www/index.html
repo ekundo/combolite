@@ -2631,13 +2631,16 @@ function Board() {
         <button data-tip=${t('boots the machine with the ROM switched off')}
                 onClick=${() => key('sbr')}
                 >${arm === 'sbr' ? t('once more — it reboots') : t('SBR')}</button></div>`}
-      ${f.loader && html`<div><span>${t('the machine boots')}</span>
+      ${f.loader && html`<div><span>${t('loader')}</span>
         <select value=${s.boot || 0} onChange=${e => set('boot=' + e.target.value)}
-                data-tip=${t('after VVOD on the keyboard the board presses SBR itself')}>
-          <option value="0">${t('from ROM')}</option>
-          <option value="1">${t('via the boot loader at power-on')}</option>
-          ${(f.kbd_reset || s.boot === 2) && html`<option value="2"
-            >${t('via the boot loader, also after VVOD')}</option>`}</select></div>`}
+                data-tip=${t('BOOT26 from the board: at power-on and after VVOD, without replacing the ROM')}>
+          <option value="0">${t('the machine’s ROM')}</option>
+          ${s.boot === 1 && html`<option value="1">${t('BOOT26, only at power-on')}</option>`}
+          <option value=${f.kbd_reset ? 2 : 1}>${t('BOOT26 from the board')}</option></select></div>`}
+      ${f.kbd_reset && html`<label class="chk"
+               data-tip=${t('when the loader blinks RUS/LAT at the end, the board presses SBR itself')}
+               ><input type="checkbox" checked=${s.autostart !== 0}
+               onChange=${() => set('autostart=' + (s.autostart !== 0 ? 0 : 1))}/>${t('start the loaded program')}</label>`}
       ${f.loader && html`<div><span>${t('boot loader')}</span>
         <b>${ld.window ? t('window open') : ld.armed ? t('armed') : t('not armed')}</b></div>`}
       ${f.loader && html`<div class="asks">

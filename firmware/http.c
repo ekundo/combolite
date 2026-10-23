@@ -777,9 +777,10 @@ static void api_board_settings(int s, int keep, const char *query)
     if ((v = qval(query, "vi53",    NONE)) != NONE) st.vi53_off = v == 0 ? 1 : v == 1 ? 0 : 255;
     if ((v = qval(query, "boot",    NONE)) != NONE) st.boot     = (uint8_t)(v > 255 ? 255 : v);
     if ((v = qval(query, "fdd_cable", NONE)) != NONE) st.fdd_cable = (uint8_t)(v > 255 ? 255 : v);
+    if ((v = qval(query, "autostart", NONE)) != NONE) st.autostart = (uint8_t)(v > 255 ? 255 : v);
     if (board_set(&st) != 0) {
         fail(s, keep, 400, "Bad Request",
-             "dev_off 0..63, fdc_rdy 0..2, fdc_pc 0..31, vga60, vi53 and fdd_cable 0 or 1, boot 0..2");
+             "dev_off 0..63, fdc_rdy 0..2, fdc_pc 0..31, vga60, vi53, fdd_cable and autostart 0 or 1, boot 0..2");
         return;
     }
     api_board(s, keep);

@@ -26,7 +26,7 @@ int board_settings_valid(const board_settings_t *s)
 {
     return !(s->dev_off & ~DEV_MASK) && s->fdc_rdy <= 2 && s->fdc_pc <= 0x1F
         && s->vga60 <= 1 && s->vi53_off <= 1 && s->boot <= BOOT_VVOD
-        && s->fdd_cable <= 1;
+        && s->fdd_cable <= 1 && s->autostart <= 1;
 }
 
 /* Раскладка блоков 4 и 5 -- версия 1 в старшей тетраде байта 0x6E. Старый
@@ -62,7 +62,10 @@ static void apply(const board_settings_t *s)
     combo_cmd_arg(C_FDC_PC, s->fdc_pc);
     combo_cmd_arg(C_VGA, s->vga60 & 1);
     combo_cmd(s->vi53_off ? C_VI53_OFF : C_VI53_ON);
-    if (feat2 & BF2_KBD) combo_cmd_arg(C_BOOT, s->boot == BOOT_VVOD);
+    /* Разряд 1 -- автозапуск загруженного (BOOT26 и ПЗУ). Битстрим до него
+     * берёт только разряд 0 и после BOOT26 жмёт СБР всегда. */
+    if (feat2 & BF2_KBD)
+        combo_cmd_arg(C_BOOT, (uint8_t)((s->boot == BOOT_VVOD) | (s->autostart ? 2 : 0)));
 }
 
 void board_init(void)
@@ -237,11 +240,11 @@ static int kbd_json(char *out, int max)
     board_diag6(d6);
     return snprintf(out, (size_t)max,
         ",\"kbd\":{\"rom_known\":%s,\"kind\":\"%s\",\"own_vvod\":%s,"
-        "\"pending\":%s,\"reading\":%s,\"same\":%u,\"events\":%u,\"vvod\":%u,"
-        "\"first\":\"%02x%02x%02x%02x%02x\"},"
+        "\"pending\":%s,\"reading\":%s,\"rom_live\":%s,\"same\":%u,\"events\":%u,"
+        "\"vvod\":%u,\"first\":\"%02x%02x%02x%02x%02x\"},"
         "\"diag6\":\"%02x%02x%02x%02x%02x%02x%02x%02x\"",
         tf(d6[0] & 0x80), kinds[d6[0] & 3], tf(d6[0] & 0x20),
-        tf(d6[0] & 0x40), tf(d6[0] & 0x10), d6[1], d6[2] & 15, d6[2] >> 4,
+        tf(d6[0] & 0x40), tf(d6[0] & 0x10), tf(d6[0] & 0x04), d6[1], d6[2] & 15, d6[2] >> 4,
         d6[3], d6[4], d6[5], d6[6], d6[7],
         d6[0], d6[1], d6[2], d6[3], d6[4], d6[5], d6[6], d6[7]);
 }
@@ -277,9 +280,9 @@ int board_json(char *out, int max)
         return snprintf(out, (size_t)max,
             "{\"present\":false,\"settings\":{\"dev_off\":%u,\"fdc_rdy\":%u,"
             "\"fdc_pc\":%u,\"vga60\":%u,\"vi53\":%s,\"boot\":%u,"
-            "\"fdd_cable\":%u}}\n",
+            "\"fdd_cable\":%u,\"autostart\":%u}}\n",
             cur.dev_off, cur.fdc_rdy, cur.fdc_pc, cur.vga60, tf(!cur.vi53_off),
-            cur.boot, cur.fdd_cable);
+            cur.boot, cur.fdd_cable, cur.autostart);
 
     board_diag(d4, d5);
     n = snprintf(out, (size_t)max,
@@ -288,7 +291,7 @@ int board_json(char *out, int max)
         "\"loader\":%s,\"mirror\":%s,\"watch\":%s,\"video\":%s,\"ay\":%s,"
         "\"kvaz2\":%s,\"audio_split\":%s,\"kbd_reset\":%s,\"palette\":%s},"
         "\"settings\":{\"dev_off\":%u,\"fdc_rdy\":%u,\"fdc_pc\":%u,"
-        "\"vga60\":%u,\"vi53\":%s,\"boot\":%u,\"fdd_cable\":%u},"
+        "\"vga60\":%u,\"vi53\":%s,\"boot\":%u,\"fdd_cable\":%u,\"autostart\":%u},"
         "\"keys\":{\"vvod\":%s,\"sbr\":%s},"
         "\"loader\":{\"window\":%s,\"armed\":%s},"
         "\"video\":{\"raster_ok\":%s,\"vid_lock\":%s,\"vga60\":%s,"
@@ -307,7 +310,7 @@ int board_json(char *out, int max)
         tf(feat & BF_WATCH), tf(feat & BF_VIDEO), tf(feat2 & BF2_AY),
         tf(feat2 & BF2_KVAZ2), tf(feat2 & BF2_AUDIO_SPLIT), tf(feat2 & BF2_KBD), tf(has_pal),
         cur.dev_off, cur.fdc_rdy, cur.fdc_pc, cur.vga60, tf(!cur.vi53_off), cur.boot,
-        cur.fdd_cable,
+        cur.fdd_cable, cur.autostart,
         tf(d4[0] & 0x10), tf(d4[0] & 0x20),
         tf(d4[0] & 0x80), tf(d4[0] & 0x40),
         tf(d4[0] & 0x01), tf(d4[0] & 0x02), tf(d4[0] & 0x04), tf(d4[0] & 0x08),
@@ -330,16 +333,18 @@ int board_json(char *out, int max)
 
 #define NS  "board"
 #define KEY "cfg"
-#define VER 3
+#define VER 4
 
 /* Первый байт -- версия записи: поля прибавятся, и запись старой прошивки
  * должна читаться как «не было», а не разъезжаться по полям. Старые версии
  * берём, недостающие поля -- по умолчанию, иначе обновление сбросило бы хозяину
- * все настройки: версия 1 -- без boot, версия 2 -- без fdd_cable. */
+ * все настройки: версия 1 -- без boot, версия 2 -- без fdd_cable, версия 3 --
+ * без autostart (берётся включённым: так плата вела себя до неё). */
 int board_settings_load(board_settings_t *out)
 {
     const size_t v1 = offsetof(board_settings_t, boot);
     const size_t v2 = offsetof(board_settings_t, fdd_cable);
+    const size_t v3 = offsetof(board_settings_t, autostart);
     board_settings_t d = BOARD_SETTINGS_DEFAULT;
     nvs_handle_t h;
     uint8_t b[1 + sizeof *out];
@@ -352,7 +357,8 @@ int board_settings_load(board_settings_t *out)
             memcpy(out, b + 1, sizeof *out);
             rc = 0;
         }
-        else if ((n == 1 + v1 && b[0] == 1) || (n == 1 + v2 && b[0] == 2)) {
+        else if ((n == 1 + v1 && b[0] == 1) || (n == 1 + v2 && b[0] == 2)
+                 || (n == 1 + v3 && b[0] == 3)) {
             memcpy(&d, b + 1, n - 1);
             *out = d;
             rc = 0;

@@ -81,6 +81,16 @@ module vid_play #(
     // и бордюр (загрузчик -- в строках 0..11), и низ бордюра шёл бы полосами.
     // Эти строки -- чёрные; видно 18 строк бордюра сверху и 16 снизу.
     parameter [8:0]  VBL = 9'd22,
+    parameter [8:0]  RL  = 9'd352,         // строк в кольце журнала (vid_rec.v)
+    // ВЫБОР КАДРА: в начале нашего кадра -- текущий кадр машины, если её запись
+    // ушла от строки 0 не меньше чем на THR строк (иначе к низу картинки мы бы
+    // её обогнали), и предыдущий -- если меньше (его верх ещё в кольце). 60 Гц:
+    // строка машины у нас 52,8 мкс против 64, низ (строка 311) -- через 15,47
+    // мс, машина дойдёт до его конца не раньше, чем с 71-й строки; верх
+    // предыдущего кадра (строка 22) затрётся, когда запись уйдёт за 79-ю. 50 Гц:
+    // темп тот же, что у машины, хватает 26 строк; верх живёт до 85-й.
+    parameter [8:0]  THR60 = 9'd74,
+    parameter [8:0]  THR50 = 9'd30,
     parameter [8:0]  PIC_LINE0 = 9'd40,
     parameter [7:0]  POS_PIC0  = 8'd28,
     // 50 Гц (576p): видимая часть строки, картинка с X0_50, бордюр TOP50
@@ -102,8 +112,14 @@ module vid_play #(
     // журнал и снимки (vid_rec.v), чтение с задержкой в такт
     output wire [12:0] ev_raddr,
     input  wire [17:0] ev_q,
-    output wire [11:0] sn_raddr,
-    input  wire [17:0] sn_q,
+    output wire [12:0] sn_raddr,
+    input  wire [8:0]  sn_q,
+    // где запись (vid_rec.v, «КОЛЬЦО»), в чужом такте
+    input  wire [8:0]  rec_line,
+    input  wire [8:0]  fb_last,
+    input  wire [8:0]  fb_prev,
+    input  wire [15:0] vm_last,
+    input  wire [15:0] vm_prev,
     // строчный буфер: пишет выборка в своём такте
     input  wire        wclk,
     input  wire        lb_we,
@@ -123,6 +139,7 @@ module vid_play #(
     // для диагностики: режим кадра и ошибка привязки на последней строке 0
     // машины (в строках, со знаком; 0 -- привязка точная)
     output wire        m60_o,
+    output reg  [9:0]  vrem_o = 10'd0,    // строк до начала следующего кадра (vid_fetch.v)
     output wire        ce_o,              // разрешение такта: чтение журнала (vid_rec.v)
     output reg  [7:0]  lock_err_o = 8'd0
 );
@@ -211,6 +228,26 @@ always @(posedge clk) if (ce) begin
     end
 end
 
+// ---------------------------------------------------------- выбор кадра
+// Где запись, -- из чужого такта, по совпадению двух отсчётов: меняется раз в
+// строку машины. Кадр машины на весь наш кадр выбирается в его начале
+// (fsel_*), см. THR60.
+reg  [58:0] rs1 = 59'd0, rs2 = 59'd0, rsv = 59'd0;
+always @(posedge clk) begin
+    rs1 <= {rec_line, fb_last, fb_prev, vm_last, vm_prev};
+    rs2 <= rs1;
+    if (rs1 == rs2) rsv <= rs2;
+end
+wire [8:0]  s_line = rsv[58:50];
+wire [8:0]  s_fbl  = rsv[49:41];
+wire [8:0]  s_fbp  = rsv[40:32];
+wire [15:0] s_vml  = rsv[31:16];
+wire [15:0] s_vmp  = rsv[15:0];
+// запись ещё в гасящих строках -- новый кадр в кольце не начат, «последний»
+// и есть предыдущий; дальше -- по порогу
+wire        use_last = (s_line < VBL) || (s_line >= (md_s[1] ? THR60 : THR50));
+reg  [8:0]  fsel_b = 9'd0;
+
 // строка показа следующей строки VGA и её строка машины
 wire [8:0] nd    = nvc[9:1];                         // 0..313; видимые 0..299 (60), 0..287 (50)
 wire       nvis  = nvc < VVIS;
@@ -260,7 +297,8 @@ wire       show;
 
 reg  [3:0] wbd = 4'd0;                 // номер бордюра
 reg        m512 = 1'b0;
-reg  [4:0] nev = 5'd0;
+reg        pv = 1'b0;                  // готовим видимую строку (не гасящую)
+reg  [8:0] rline = 9'd0;               // её строка кольца
 
 // Перенос записей «под лучом» на следующие строки: значение по ячейке и
 // признак, что оно есть. Пишется только на ВТОРОЙ строке VGA каждой строки
@@ -273,7 +311,6 @@ reg        cr_we = 1'b0;
 reg  [3:0] cr_wa = 4'd0;
 reg  [7:0] cr_wd = 8'd0;
 always @(posedge clk) if (cr_we) cr[cr_wa] <= cr_wd;
-reg        last_par = 1'b0;
 reg        sec = 1'b0;                 // готовим вторую строку VGA пары
 
 // подготовка: снимок (9 слов, по две ячейки -- два такта на слово), потом
@@ -287,26 +324,27 @@ reg         inl = 1'b0;                // строка, для которой г
 reg  [1:0]  ev_v = 2'b00;              // ev_q соответствует ep -- через два такта
 wire        ev_ok = ev_v[1];           // после смены адреса (vid_rec.v)
 
-// Порядок снимка: СНАЧАЛА слово 8 (признак кадра решает, брать ли перенос),
-// потом слова 0..7 -- пары ячеек. Каждое слово -- два такта.
-wire [11:0] sn_base = {pm, 3'b000} + {3'b000, pm};
-wire [3:0]  sn_word = (si[4:1] == 4'd0) ? 4'd8 : si[4:1] - 4'd1;
-assign sn_raddr = sn_base + {8'd0, sn_word};
-assign ev_raddr = {pm, ep[3:0]};
+// Снимок: 16 слов, по ячейке на такт; разряд 8 слов 0..4 -- порт B.
+// События -- до слова-конца {11, ...} или до шестнадцатого.
+assign sn_raddr = {rline, si[3:0]};
+assign ev_raddr = {rline, ep[3:0]};
+// строка кольца для строки машины nm выбранного кадра
+wire [9:0] rl_sum = {1'b0, fsel_b} + {1'b0, nm - VBL};
+wire [8:0] rl_nm  = (rl_sum >= {1'b0, RL}) ? rl_sum[8:0] - RL : rl_sum[8:0];
 
 // место события на экране
 wire [7:0]         e_pos  = ev_q[15:8];
 wire signed [12:0] e_x    = $signed({2'b00, XP0}) +
                             $signed({{3{1'b0}}, e_pos, 2'b00}) -
                             $signed({{3{1'b0}}, POS_PIC0, 2'b00});
-wire               e_due  = ev_ok && ep < nev &&
+wire               e_term = ev_q[17] & ev_q[16];
+wire               e_due  = ev_ok && pv && ep < 5'd16 && !e_term &&
                             (e_x < 0 || (inl && ($signed({2'b00, hc}) >= e_x || hc >= HVIS)));
 
 // слово снимка приходит тактом позже адреса
 reg  [4:0] si_d = 5'd0;
 reg        sn_v = 1'b0;
-wire [3:0] sn_w1   = si_d[4:1] - 4'd1;             // слово 0..7
-wire [3:0] sn_cell = {sn_w1[2:0], si_d[0]};
+wire [3:0] sn_cell = si_d[3:0];
 
 always @(posedge clk) if (ce) begin
     wk_we <= 1'b0;
@@ -314,11 +352,19 @@ always @(posedge clk) if (ce) begin
     sn_v  <= (ph == P_SN);
     si_d  <= si;
     if (hend) inl <= 1'b1;
+    // начало нашего кадра: кадр машины на весь кадр; ячейки, записанные в
+    // гасящих строках перед ним, снимают перенос
+    if (hend && nvc == 10'd0) begin
+        fsel_b <= use_last ? s_fbl : s_fbp;
+        cv     <= cv & ~(use_last ? s_vml : s_vmp);
+    end
 
     case (ph)
     P_IDLE:
         if (hc == HSN) begin
             pm  <= nm;
+            pv  <= nm >= VBL;
+            rline <= rl_nm;
             sec <= nvc[0];
             si  <= 5'd0;
             ph  <= P_SN;
@@ -326,7 +372,7 @@ always @(posedge clk) if (ce) begin
         end
     P_SN: begin
         si <= si + 5'd1;
-        if (si == 5'd18) begin ph <= P_EV; ep <= 5'd0; ev_v <= 2'b00; end
+        if (si == 5'd16) begin ph <= P_EV; ep <= 5'd0; ev_v <= 2'b00; end
     end
     P_EV: begin
         ev_v <= {ev_v[0], 1'b1};
@@ -352,21 +398,14 @@ always @(posedge clk) if (ce) begin
     default: ph <= P_IDLE;
     endcase
 
-    // снимок: слово 8 -- {кадр, событий, порт B}, потом пары ячеек; ячейка с
-    // переносом берётся из переноса
-    if (sn_v) begin
-        if (si_d == 5'd0) begin
-            nev  <= (sn_q[9:5] > 5'd16) ? 5'd16 : sn_q[9:5];
-            wbd  <= sn_q[3:0];
-            m512 <= sn_q[4];
-            last_par <= sn_q[10];
-        end
-        else if (si_d[4:1] != 4'd0 && si_d[4:1] <= 4'd8) begin
-            wk_we <= 1'b1;
-            wk_wa <= sn_cell;
-            wk_wd <= cv[sn_cell] ? cr[sn_cell]
-                   : si_d[0] ? sn_q[15:8] : sn_q[7:0];
-        end
+    // снимок: ячейки 0..15, разряд 8 слов 0..4 -- порт B; ячейка с переносом
+    // берётся из переноса
+    if (sn_v && pv && !si_d[4]) begin
+        wk_we <= 1'b1;
+        wk_wa <= sn_cell;
+        wk_wd <= cv[sn_cell] ? cr[sn_cell] : sn_q[7:0];
+        if (si_d[3:0] < 4'd4)  wbd[si_d[1:0]] <= sn_q[8];
+        if (si_d[3:0] == 4'd4) m512 <= sn_q[8];
     end
 end
 
@@ -405,6 +444,7 @@ end
 wire [2:0] bitn = 3'd7 - pc[3:1];
 wire [3:0] idx4 = {cur0[bitn], cur1[bitn], cur2[bitn], cur3[bitn]};
 assign m60_o = m60;
+always @(posedge clk) vrem_o <= vtot - vc;
 assign ce_o  = ce;
 assign idx  = !m512  ? idx4
             : !pc[0] ? {2'b00, idx4[1:0]} : {idx4[3:2], 2'b00};

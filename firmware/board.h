@@ -49,6 +49,9 @@ typedef struct {
     uint8_t boot;       /* BOOT_*: чем грузится машина */
     uint8_t fdd_cable;  /* шлейф дисковода: 0 Шугарт (A: 10, B: 12, мотор 16),
                            1 ПК с перекруткой (A: 12, B: 16, мотор 10), fpga/hdl/top.v */
+    uint8_t autostart;  /* 1 -- автозапуск загруженного: на мигании РУС/ЛАТ в конце
+                           загрузки (BOOT26 или ПЗУ) плата сама жмёт СБР
+                           (fpga/hdl/fakerom.v); от boot не зависит */
 } board_settings_t;
 
 /* Чем грузится машина. Настройка живёт в прошивке: при включении ESP сама
@@ -62,7 +65,7 @@ typedef struct {
  * так же, как сама ПЛИС. VGA по умолчанию -- 60 Гц (VESA 800x600): его берет
  * любой монитор, а 576p при 50 Гц -- не всякий. Сохранённая запись
  * любой версии несёт vga60 сама, выбор хозяина при обновлении не трогается. */
-#define BOARD_SETTINGS_DEFAULT { 0, 1, 0, 1, 0, BOOT_ROM, 0 }
+#define BOARD_SETTINGS_DEFAULT { 0, 1, 0, 1, 0, BOOT_ROM, 0, 1 }
 
 int  board_settings_valid(const board_settings_t *s);
 

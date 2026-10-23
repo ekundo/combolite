@@ -208,8 +208,12 @@ module ide_remote #(
     output reg          loader_stb,
     output reg  [1:0]   loader_cmd,
     // Подставной загрузчик после ВВОД с клавиатуры (команда 0x56 + байт,
-    // разряд 0), исполняет rom_sense.v. По сбросу выключен.
+    // разряд 0), исполняет rom_sense.v. Разряд 1 -- автозапуск загруженного:
+    // на мигании РУС/ЛАТ в конце загрузки, BOOT26 или ПЗУ, плата сама жмёт
+    // СБР (fakerom.v). По сбросу загрузчик после ВВОД выключен, автозапуск
+    // включён -- как вела себя плата до этой настройки.
     output reg          boot_kbd,
+    output reg          boot_auto,
     // Карта «грязных» блоков зеркала (команда 0x4D, дальше 32 байта ответа),
     // хранит mirror.v. Сигналы -- комбинационные, в такт приёма байта: ответ
     // нужен через полпериода SCK, а это три такта.
@@ -299,7 +303,7 @@ localparam C_RES    = 8'h18,
            C_DIRTY    = 8'h4D,        // карта блоков зеркала: 32 байта, чтение гасит
            C_VGA      = 8'h4E,        // + режим VGA: разряд 0 -- 60 Гц
            C_FDC_PC   = 8'h4F,        // + предкомпенсация ВГ93: 3..0 шаги, 4 -- TG43
-           C_BOOT     = 8'h56,        // + загрузчик после ВВОД с клавиатуры: разряд 0
+           C_BOOT     = 8'h56,        // + загрузчик после ВВОД с клавиатуры: разряд 0; автозапуск загруженного: разряд 1
            C_SCRROW   = 8'h52,        // + номер строки экрана для ESP
            C_SCRRD    = 8'h53,        // выдача строки экрана, 131 байт
            C_PALRD    = 8'h57,        // выдача палитры и порта B, 17 байт
@@ -558,6 +562,7 @@ always @(posedge clk) begin
         key_cmd   <= 2'd0;
         loader_cmd <= 2'd0;
         boot_kbd  <= 1'b0;      // по сбросу ВВОД с клавиатуры ведёт в ПЗУ, как без платы
+        boot_auto <= 1'b1;
         scr_req_row <= 8'd0;
         mouse_btn <= 8'h00; mouse_dx <= 8'h00; mouse_dy <= 8'h00; mouse_wh <= 8'h00;
         ms_n      <= 2'd0;
@@ -758,7 +763,7 @@ always @(posedge clk) begin
             3'd3:    begin loader_cmd <= rx_data[1:0]; loader_stb <= 1'b1; end
             3'd4:    vga60 <= rx_data[0];
             3'd6:    fdc_pc <= rx_data[4:0];
-            3'd7:    if (KBD) boot_kbd <= rx_data[0];
+            3'd7:    if (KBD) begin boot_kbd <= rx_data[0]; boot_auto <= rx_data[1]; end
             default: begin scr_req_row <= rx_data; scr_req_stb <= 1'b1; end
             endcase
             phase <= P_CMD;
