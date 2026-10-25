@@ -316,3 +316,37 @@ void combo_scr_peek(uint8_t *ready, uint8_t *row)
     *row   = link_xfer(0x00);
     link_deselect();
 }
+
+combo_chan_stat_t combo_chan_stat;
+
+int combo_chan_read(uint8_t *buf, int max, int *free, int *flushed)
+{
+    uint8_t first;
+    int n = 0;
+
+    link_select();
+    link_xfer(C_CHRD);
+    first = link_xfer(0x00);
+    combo_chan_stat.polls++;
+    combo_chan_stat.first = first;
+    if ((first & 0x9F) != 0x15) { link_deselect(); combo_chan_stat.bad++; return -1; }
+    while (n < max && link_xfer(0x00) == 0x01) buf[n++] = link_xfer(0x00);
+    link_deselect();
+    combo_chan_stat.in += (uint32_t)n;
+    if (first & 0x40) combo_chan_stat.flushes++;
+    *free = (first & 0x20) ? CHAN_DEPTH : 0;
+    *flushed = (first & 0x40) != 0;
+    return n;
+}
+
+void combo_chan_write(const uint8_t *buf, int n)
+{
+    int i;
+
+    if (n <= 0) return;
+    combo_chan_stat.out += (uint32_t)n;
+    link_select();
+    link_xfer(C_CHWR);
+    for (i = 0; i < n; i++) link_xfer(buf[i]);
+    link_deselect();
+}

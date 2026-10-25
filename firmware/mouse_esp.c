@@ -8,8 +8,12 @@
  * (1) и протоколом «мышь» (2) и переводим его в загрузочный протокол. У такого
  * отчёта нет номера, и байты стоят на своих местах.
  *
- * Колесо -- четвёртый байт, если он есть. Стандарт загрузочного протокола
- * говорит только о трёх, но мыши с колесом кладут его туда и в этом режиме.
+ * КОЛЕСО -- ТОЛЬКО В ПРОТОКОЛЕ ОТЧЁТОВ. Загрузочный протокол знает три байта,
+ * и колесо четвёртым туда кладут не все: мышь первой rev4 слала ровно три
+ * (25.10.2026). Поэтому сначала читаем описатель отчётов (hidmouse.c): нашлись
+ * в нём X и Y -- включаем протокол отчётов и берём кнопки, сдвиги и колесо с
+ * найденных мест. Не нашлись или описатель не прочитался -- загрузочный
+ * протокол, как раньше, колесо четвёртым байтом, если он есть.
  *
  * Сумму движений ведёт ПЛИС: каждый пакет прибавляется к накопителю, машина
  * забирает накопленное, когда читает порт. Поэтому отчёт уходит сразу, без
@@ -19,12 +23,14 @@
 #include "mouse.h"
 #include "board.h"
 #include "combo.h"
+#include "hidmouse.h"
 
 #include "esp_intr_alloc.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "usb/usb_helpers.h"
 #include "usb/usb_host.h"
 
 static const char *TAG = "mouse";
@@ -46,6 +52,10 @@ static SemaphoreHandle_t ctl_done;
 static uint8_t new_addr;
 static usb_device_handle_t gone;
 static uint8_t last_btn;                    /* кнопки последнего отчёта */
+static hidm_t layout;                       /* раскладка отчёта по описателю */
+static int by_desc;                         /* 1 -- протокол отчётов и layout */
+
+#define DESC_MAX 512                        /* описатель отчётов мыши -- десятки байт */
 
 static void client_cb(const usb_host_client_event_msg_t *m, void *arg)
 {
@@ -62,14 +72,35 @@ static void ctl_cb(usb_transfer_t *t)
 
 static void in_cb(usb_transfer_t *t)
 {
+    static int said_len, said_wheel;
     if (t->status == USB_TRANSFER_STATUS_COMPLETED && t->actual_num_bytes >= 3) {
         const uint8_t *r = t->data_buffer;
-        /* Кнопки -- три младших разряда: у интерфейса машины их три. */
-        last_btn = r[0] & 0x07;
+        uint8_t btn;
+        int dx, dy, wh;
+        /* Для журнала: длина отчёта -- при каждой смене, колесо -- один раз,
+         * первое ненулевое. */
+        if ((int)t->actual_num_bytes != said_len) {
+            said_len = (int)t->actual_num_bytes;
+            ESP_LOGI(TAG, "report: %d bytes", said_len);
+        }
+        if (by_desc) {
+            if (hidm_decode(&layout, r, (int)t->actual_num_bytes, &btn, &dx, &dy, &wh) != 0)
+                goto again;                 /* чужой отчёт того же устройства */
+        } else {
+            /* Кнопки -- три младших разряда: у интерфейса машины их три. */
+            btn = r[0] & 0x07;
+            dx = (int8_t)r[1]; dy = (int8_t)r[2];
+            wh = t->actual_num_bytes >= 4 ? (int8_t)r[3] : 0;
+        }
+        if (!said_wheel && wh) {
+            said_wheel = 1;
+            ESP_LOGI(TAG, "wheel seen: %d", wh);
+        }
+        last_btn = btn;
         if (board_features() & BF_MOUSE)
-            combo_mouse(last_btn, (int8_t)r[1], (int8_t)r[2],
-                        t->actual_num_bytes >= 4 ? (int8_t)r[3] : 0);
+            combo_mouse(last_btn, (int8_t)dx, (int8_t)dy, (int8_t)wh);
     }
+again:
     /* Отменённую и ушедшую с устройством не перезапускаем: мышь вынули. */
     if (t->status == USB_TRANSFER_STATUS_NO_DEVICE ||
         t->status == USB_TRANSFER_STATUS_CANCELED || !dev)
@@ -101,6 +132,47 @@ static esp_err_t hid_request(uint8_t req, uint16_t value)
         usb_host_client_handle_events(client, pdMS_TO_TICKS(10));
     }
     return ctl_xfer->status == USB_TRANSFER_STATUS_COMPLETED ? ESP_OK : ESP_FAIL;
+}
+
+/* Описатель отчётов интерфейса (HID 1.11, 7.1.1) -> layout. 0 -- разобран.
+ * Посылка своя, на DESC_MAX: общая ctl_xfer рассчитана на запросы без данных. */
+static int read_layout(void)
+{
+    const usb_device_desc_t *dd;
+    usb_transfer_t *x;
+    usb_setup_packet_t *s;
+    TickType_t t0 = xTaskGetTickCount();
+    int mps0 = 8, n, rc = -1;
+
+    if (usb_host_get_device_descriptor(dev, &dd) == ESP_OK) mps0 = dd->bMaxPacketSize0;
+    if (usb_host_transfer_alloc(sizeof(usb_setup_packet_t) + usb_round_up_to_mps(DESC_MAX, mps0),
+                                0, &x) != ESP_OK)
+        return -1;
+    s = (usb_setup_packet_t *)x->data_buffer;
+    s->bmRequestType = USB_BM_REQUEST_TYPE_DIR_IN | USB_BM_REQUEST_TYPE_TYPE_STANDARD |
+                       USB_BM_REQUEST_TYPE_RECIP_INTERFACE;
+    s->bRequest = USB_B_REQUEST_GET_DESCRIPTOR;
+    s->wValue   = 0x22 << 8;                /* описатель отчётов, первый */
+    s->wIndex   = intf;
+    s->wLength  = DESC_MAX;
+    x->num_bytes        = sizeof(usb_setup_packet_t) + usb_round_up_to_mps(DESC_MAX, mps0);
+    x->device_handle    = dev;
+    x->bEndpointAddress = 0;
+    x->callback         = ctl_cb;
+    xSemaphoreTake(ctl_done, 0);
+    if (usb_host_transfer_submit_control(client, x) == ESP_OK) {
+        while (xSemaphoreTake(ctl_done, 0) != pdTRUE) {
+            if (xTaskGetTickCount() - t0 > pdMS_TO_TICKS(500)) goto out;   /* x в полёте -- не освобождать */
+            usb_host_client_handle_events(client, pdMS_TO_TICKS(10));
+        }
+        n = (int)x->actual_num_bytes - (int)sizeof(usb_setup_packet_t);
+        if (x->status == USB_TRANSFER_STATUS_COMPLETED && n > 0)
+            rc = hidm_parse(x->data_buffer + sizeof(usb_setup_packet_t), n, &layout);
+        ESP_LOGI(TAG, "report descriptor: %d bytes, %s", n, rc == 0 ? "mouse found" : "no X and Y");
+    }
+    usb_host_transfer_free(x);
+out:
+    return rc;
 }
 
 /* Найти загрузочный интерфейс мыши и его входную конечную точку. */
@@ -153,8 +225,15 @@ static void open_mouse(uint8_t addr)
         return;
     }
     /* SET_IDLE вправе отвергнуть, SET_PROTOCOL у загрузочного подкласса
-     * обязан понимать; не понял -- работаем как есть, отчёт обычно тот же. */
-    if (hid_request(HID_SET_PROTOCOL, 0) != ESP_OK)
+     * обязан понимать; не понял -- работаем как есть. Протокол отчётов (1) --
+     * если раскладка нашлась в описателе, иначе загрузочный (0). */
+    by_desc = read_layout() == 0;
+    if (by_desc) {
+        if (hid_request(HID_SET_PROTOCOL, 1) != ESP_OK)
+            ESP_LOGW(TAG, "SET_PROTOCOL(report) refused, reading reports as they come");
+        ESP_LOGI(TAG, "report protocol: id %u, buttons %u, X %u bits, Y %u bits, wheel %u bits",
+                 layout.id, layout.btn_n, layout.x_size, layout.y_size, layout.w_size);
+    } else if (hid_request(HID_SET_PROTOCOL, 0) != ESP_OK)
         ESP_LOGW(TAG, "SET_PROTOCOL(boot) refused, reading reports as they come");
     hid_request(HID_SET_IDLE, 0);
 

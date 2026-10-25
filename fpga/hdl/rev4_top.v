@@ -98,9 +98,9 @@ module rev4_top (
     output wire        esp_miso
 );
 
-wire clk16, clk40, pll_lock;
+wire clk16, clk40, clkv, pll_lock;
 wire cpc_d0, cpc_d1;                   // такт 590-го половинами, на ODDRXE (ниже)
-pll_fdc pll (.clk50(clk50), .clk40(clk40), .clk16(clk16), .lock(pll_lock));
+pll_fdc pll (.clk50(clk50), .clk40(clk40), .clkv(clkv), .clk16(clk16), .lock(pll_lock));
 
 top #(
     .IDE_RESET_TICKS (12'd2500),
@@ -131,7 +131,7 @@ top #(
     .fdd_index_n(fdd_index_n), .fdd_trk00_n(fdd_trk00_n), .fdd_wpt_n(fdd_wpt_n),
     .fdd_rdata_n(fdd_rdata_n), .fdd_rdy_n(fdd_rdy_n),
     .key_vvod(key_vvod), .key_sbr(key_sbr),
-    .clk_vga(clk40), .strob(strob),
+    .clk_vga(clkv), .strob(strob),      // 53,333 МГц: 720x900
     .vga_r(vga_r), .vga_g(vga_g), .vga_b(vga_b), .vga_hs(vga_hs), .vga_vs(vga_vs),
     .addr_cpc(), .addr_cpc_d0(cpc_d0), .addr_cpc_d1(cpc_d1),
     .addr_mrc(addr_mrc), .addr_src(addr_src), .sram_oe_n(sram_oe_n),

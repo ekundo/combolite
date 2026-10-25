@@ -12,6 +12,8 @@
 #include "combo.h"   /* combo_status: сырой байт от ПЛИС в сообщении об отказе */
 #include "link.h"
 #include "serve.h"
+#include "vchan.h"
+#include "modem.h"
 #include "eslog.h"
 #include "netcfg.h"
 #include "ota.h"
@@ -19,6 +21,7 @@
 #include "wifi.h"
 
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_spiffs.h"
 #include "espsec.h"
 
@@ -94,6 +97,27 @@ static int early_drive_reset(void)
     return 1;
 }
 
+/* Почему плата перезапустилась -- первой строкой журнала. Журнал живёт в
+ * памяти и после сброса начинается заново, так что без этой строки падение,
+ * сторож и просадка питания выглядят одинаково: просто «плата заново». */
+static void log_reset_reason(void)
+{
+    static const char *const names[] = {
+        [ESP_RST_UNKNOWN] = "unknown", [ESP_RST_POWERON] = "power-on",
+        [ESP_RST_EXT] = "external pin", [ESP_RST_SW] = "software (esp_restart)",
+        [ESP_RST_PANIC] = "panic", [ESP_RST_INT_WDT] = "interrupt watchdog",
+        [ESP_RST_TASK_WDT] = "task watchdog", [ESP_RST_WDT] = "other watchdog",
+        [ESP_RST_DEEPSLEEP] = "deep sleep", [ESP_RST_BROWNOUT] = "brownout",
+        [ESP_RST_SDIO] = "SDIO",
+    };
+    esp_reset_reason_t r = esp_reset_reason();
+    const char *n = ((unsigned)r < sizeof names / sizeof names[0] && names[r]) ? names[r] : "?";
+    if (r == ESP_RST_POWERON || r == ESP_RST_SW)
+        ESP_LOGI(TAG, "reset reason: %s (%d)", n, (int)r);
+    else
+        ESP_LOGW(TAG, "reset reason: %s (%d)", n, (int)r);
+}
+
 void app_main(void)
 {
     /* ОБЕ СТРУКТУРЫ ОБНУЛЯЮТСЯ, и это не бережливость.
@@ -128,6 +152,7 @@ void app_main(void)
     /* Копить журнал начинаем первым делом: самое нужное в нём — строки о
        подключении к сети, а они печатаются через несколько миллисекунд. */
     eslog_start();
+    log_reset_reason();
 
     e = nvs_flash_init();
 
@@ -162,6 +187,10 @@ void app_main(void)
 #ifdef CONFIG_COMBO_USB_MOUSE
         mouse_start();
 #endif
+        /* Канал с «Вектором» (CL.COM, TERM.COM): опрос сам ждёт битстрима
+         * с каналом. Модем и экран терминала -- до него: канал их зовёт. */
+        modem_start();
+        vchan_start();
     }
 
     /* КУДА ПОДКЛЮЧАТЬСЯ, решается здесь, и порядок важен.

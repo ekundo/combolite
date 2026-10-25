@@ -151,19 +151,37 @@ endcase
 wire signed [AW-1:0] cur_take = has_acc_r ? (scaled_r ? (q_val <<< 3) : q_val) : 0;
 
 // ---- цикл чтения: заморозить по началу, вычесть по концу
+//
+// Конец строба -- со второй и третьей ступени (rd_s2, rd_s3), а не по rd_me. iord
+// снимается по живому ~ЧТВВ (vu_bus.v), то есть не в такт, а конец чтения
+// заводит вычет: tk_pend, tk_val, tk_ai -- десяток триггеров. Строб, снятый у
+// фронта, одни из них видели, другие нет: вычет пропадал (смещение уходило
+// «Вектору» дважды) или брал не то. Так же двоились байты модема в vchan.v
+// (25.10.2026). Снимок отданного (take) держится, пока конец не дошёл до rd_s3:
+// иначе он успел бы взять смещение, пришедшее уже после чтения. Первая ступень
+// (rd_d) ловит несинхронный строб и в rd_end не входит: её метастабильность
+// не должна доходить до вычета.
+// Начало строба синхронно (поднимает его очищенный ~ЧТВВ), rd_beg -- как было.
 wire        rd_me = iord & (port == PORT);
-reg         rd_d;
+reg         rd_d, rd_s2, rd_s3;
 reg  [7:0]  q;
 reg  signed [AW-1:0] take;
 reg  [2:0]  take_ai;
 reg         take_has;
 always @(posedge clk)
-    if (reset) begin rd_d <= 1'b0; q <= 8'h00; take <= 0; take_ai <= 3'd0; take_has <= 1'b0; end
-    else begin
-        rd_d <= rd_me;
-        if (!rd_me) begin q <= cur; take <= cur_take; take_ai <= ai_r; take_has <= has_acc_r; end
+    if (reset) begin
+        rd_d <= 1'b0; rd_s2 <= 1'b0; rd_s3 <= 1'b0;
+        q <= 8'h00; take <= 0; take_ai <= 3'd0; take_has <= 1'b0;
+    end else begin
+        rd_d  <= rd_me;
+        rd_s2 <= rd_d;
+        rd_s3 <= rd_s2;
+        if (!rd_me) q <= cur;
+        if (!rd_me && !rd_d && !rd_s2 && !rd_s3) begin
+            take <= cur_take; take_ai <= ai_r; take_has <= has_acc_r;
+        end
     end
-wire rd_end = rd_d & ~rd_me;
+wire rd_end = rd_s3 & ~rd_s2;
 wire rd_beg = rd_me & ~rd_d;
 
 assign dout    = rd_beg ? cur : q;          // первый такт -- прямо, дальше защёлка

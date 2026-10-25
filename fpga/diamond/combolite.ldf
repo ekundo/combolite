@@ -81,6 +81,9 @@
         <Source name="../hdl/vi53_tick.v" type="Verilog" type_short="Verilog">
             <Options/>
         </Source>
+        <Source name="../hdl/vchan.v" type="Verilog" type_short="Verilog">
+            <Options/>
+        </Source>
         <Source name="../hdl/vid_fetch.v" type="Verilog" type_short="Verilog">
             <Options/>
         </Source>

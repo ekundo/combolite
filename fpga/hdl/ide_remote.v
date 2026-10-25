@@ -95,7 +95,10 @@ module ide_remote #(
     parameter KBD = 1,
     // Есть ли палитра для снимка экрана (генератор кадра, vid_rec.v). Без неё
     // код C_PALRD не разбирается.
-    parameter PAL = 1
+    parameter PAL = 1,
+    // Есть ли канал «Вектор» <-> ESP (vchan.v). Без него 0x58/0x59 отдают
+    // состояние, как свободные коды.
+    parameter CHAN = 1
 ) (
     input  wire        clk,
     // ДВА СБРОСА. reset -- сброс машины (~СБРОС с шины) или по питанию: им
@@ -237,7 +240,23 @@ module ide_remote #(
     // (vid_rec.v): 2048 байт; пока идёт выдача, pal_busy держит журнал.
     output reg  [10:0]  pal_ra = 11'd0,
     input  wire [7:0]   pal_rd,
-    output wire         pal_busy
+    output wire         pal_busy,
+    // Канал «Вектор» <-> ESP (vchan.v). 0x58 -- чтение: за состоянием байт
+    // {0, flushed, к «Вектору» пусто, 10101}, дальше пары: признак (1 -- есть
+    // байт от «Вектора») и сам байт; ESP читает пары, пока признак единица.
+    // Байт уходит из очереди только за признаком 1. 0x59 -- запись: все байты
+    // до подъёма CS идут в очередь к «Вектору»; ESP пишет пачку не больше 14,
+    // только когда та пуста. Разряд 7 первого байта -- ноль, у состояния он
+    // всегда единица: так ESP отличает старый битстрим.
+    output wire         ch_poll,
+    output wire         ch_pop,
+    output wire         ch_push,
+    output wire [7:0]   ch_wdata,
+    input  wire [7:0]   ch_head,
+    input  wire         ch_avail,
+    input  wire         ch_e2v_empty,
+    input  wire         ch_flushed,
+    output wire         ch_alive        // SPI не молчит дольше 2^24 тактов
 );
 
 localparam C_RES    = 8'h18,
@@ -280,13 +299,14 @@ localparam C_RES    = 8'h18,
            //   0x52        C_SCRROW + 1 байт (заявка на строку экрана)
            //   0x53        C_SCRRD, дальше 131 байт строки экрана
            //   0x57        C_PALRD, дальше 17 байт: палитра и порт B (vid_rec.v)
+           //   0x58, 0x59  C_CHRD, C_CHWR: канал «Вектор» <-> ESP (vchan.v)
            //   0x60..0x67  C_DIAG4: новые узлы (генератор кадра, зеркало, ...)
            //   0x68..0x6F  C_DIAG5: растр, дисковод, набор узлов битстрима
            //   0x70..0x77  C_DIAG6: сброс с клавиатуры (rom_sense.v)
            //   0x78..0x7F  C_DIAG7: ВГ93 (fdc.v, dbg)
            //   0x50..0x55  перенос: владение и явный номер
            //
-           // Свободно: 0x01..0x07, 0x58..0x5F, 0x80 и выше.
+           // Свободно: 0x01..0x07, 0x5A..0x5F, 0x80 и выше.
            //
            // C_VID_POLB не на 0x30: там сидит C_REQ, и команда поднимала бы
            // запрос шины, не трогая vid_pol. 0x20 не лучше: это начало
@@ -307,6 +327,8 @@ localparam C_RES    = 8'h18,
            C_SCRROW   = 8'h52,        // + номер строки экрана для ESP
            C_SCRRD    = 8'h53,        // выдача строки экрана, 131 байт
            C_PALRD    = 8'h57,        // выдача палитры и порта B, 17 байт
+           C_CHRD     = 8'h58,        // канал: байты от «Вектора» (vchan.v)
+           C_CHWR     = 8'h59,        // канал: байты к «Вектору»
            C_CE_ON    = 8'h19,        // выбирать кристалл ОЗУ только на стробах
            C_CE_OFF   = 8'h1A,        // выключить опыт
            C_CE_CAS   = 8'h1B,        // квалифицировать по ~CAS
@@ -343,7 +365,9 @@ localparam P_CMD = 4'd0, P_WR_LO = 4'd1, P_WR_HI = 4'd2,
            P_ARG = 4'd8,                  // один байт аргумента, см. arg_of
            P_DIRTY = 4'd9,                // выдача карты блоков зеркала
            P_SCR   = 4'd10,               // выдача строки экрана
-           P_PAL   = 4'd11;               // выдача палитры
+           P_PAL   = 4'd11,               // выдача палитры
+           P_CHRD  = 4'd12,               // канал: выдача ESP
+           P_CHWR  = 4'd13;               // канал: приём от ESP
 
 reg [3:0]  phase;
 reg [2:0]  arg_of;                  // чей аргумент ждём: 0 C_DEV, 1 C_FDC_RDY, 2 C_KEYS, 3 C_LOADER, 4 C_VGA, 5 C_SCRROW, 6 C_FDC_PC
@@ -513,10 +537,30 @@ assign sr_start = rx_valid & (phase == P_CMD) & (rx_data == C_SCRRD);
 assign sr_next  = rx_valid & (phase == P_SCR);
 assign pal_busy = (phase == P_PAL);
 
+// Канал. flushed снимается на самой команде и держится до конца выборки.
+// Байт уходит из очереди по приёму того байта SPI, во время которого он
+// выдвигался (как адрес палитры, P_PAL), и только если перед ним был признак
+// 1. Признак защёлкивается на приёме: между выдачей и приёмом «Вектор» мог
+// доложить байт, но не забрать -- забирает только ESP, -- так что единица не
+// превратится в ноль, а за нулём ESP выборку кончает.
+reg        ch_fl_q, ch_v;
+reg  [1:0] ch_k;                     // 0 -- первый байт, 1 -- признак, 2 -- данные
+wire       ch_cmd_rd = rx_valid & (phase == P_CMD) & (rx_data == C_CHRD) & (CHAN != 0);
+assign ch_poll  = ch_cmd_rd;
+assign ch_pop   = rx_valid & (phase == P_CHRD) & (ch_k == 2'd2) & ch_v;
+assign ch_push  = rx_valid & (phase == P_CHWR);
+assign ch_wdata = rx_data;
+localparam CH_AB = (QUIET_BIT >= 24) ? 24 : QUIET_BIT;   // 2^24 тактов -- 0,34 с
+assign ch_alive = ~(|quiet[QUIET_BIT:CH_AB]);
+wire [7:0] ch_byte = (ch_k == 2'd0) ? {1'b0, ch_fl_q, ch_e2v_empty, 5'b10101}
+                   : (ch_k == 2'd1) ? {7'b0000000, ch_avail}
+                   : ch_head;
+
 assign tx_data = (phase == P_RES)    ? (res_half ? res_word[15:8] : res_word[7:0])
                : (phase == P_DIRTY)  ? dm_byte
                : (phase == P_SCR)    ? sr_byte
                : (phase == P_PAL)    ? pal_rd
+               : (phase == P_CHRD)   ? ch_byte
                : (phase == P_BUF_RD) ? (buf_half ? spi_dout[7:0]  : spi_dout[15:8])
                : (phase == P_DIAG)   ? diag_byte_q
                : status;
@@ -566,6 +610,7 @@ always @(posedge clk) begin
         scr_req_row <= 8'd0;
         mouse_btn <= 8'h00; mouse_dx <= 8'h00; mouse_dy <= 8'h00; mouse_wh <= 8'h00;
         ms_n      <= 2'd0;
+        ch_fl_q <= 1'b0; ch_v <= 1'b0; ch_k <= 2'd0;
     end
     else begin
         // Сторож: любой признак жизни по SPI обнуляет счётчик, а по его
@@ -631,6 +676,10 @@ always @(posedge clk) begin
             C_SCRROW:    begin arg_of <= 3'd5; phase <= P_ARG; end
             C_SCRRD:     phase <= P_SCR;
             C_PALRD:     if (PAL) begin pal_ra <= 11'd0; phase <= P_PAL; end
+            C_CHRD:      if (CHAN) begin
+                             ch_fl_q <= ch_flushed; ch_k <= 2'd0; phase <= P_CHRD;
+                         end
+            C_CHWR:      if (CHAN) phase <= P_CHWR;
             // Диагностика: 0x38 текущий регистр, 0x39 липкое «что видели»,
             // 0x3A..0x3D счётчики, 0x3E..0x3F наблюдатель. Ответ приходит
             // СЛЕДУЮЩИМ байтом, как у чтения регистра привода.
@@ -752,6 +801,11 @@ always @(posedge clk) begin
         P_DIRTY: ;
         P_SCR:   ;
         P_PAL:   pal_ra <= pal_ra + 11'd1;   // по кругу, до подъёма CS
+        P_CHRD:  begin
+                     if (ch_k == 2'd1) ch_v <= ch_avail;
+                     ch_k <= (ch_k == 2'd1) ? 2'd2 : 2'd1;
+                 end
+        P_CHWR:  ;                           // ch_push, до подъёма CS
 
         P_WR_LO: begin wr_lo <= rx_data; phase <= P_WR_HI; end
 

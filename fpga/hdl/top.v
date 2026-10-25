@@ -42,6 +42,7 @@ module top #(
     parameter HAS_LOADER = 1,    // подставной загрузчик (нужен ~ШАП)
     parameter HAS_MIRROR = 1,    // зеркало в DD6B
     parameter HAS_WATCH  = 1,    // наблюдатель шины bus_watch -- оснастка отладки
+    parameter HAS_CHAN   = 1,    // Wi-Fi модем: порты 28h-2Dh как у UART 16550 (vchan.v)
     parameter VID_STATS  = 1,    // замеры различителя по стробу (stb_* в info)
     parameter AY_PORTS   = 1,    // регистры портов ввода-вывода AY R14/R15
     // Диагностика для SPI -- через регистр-снимок (1) или прямо (0). Источники
@@ -487,7 +488,11 @@ wire [447:0] diag_all = {fdc_dbg, kb_diag, diag5, diag4,
 reg  [447:0] diag_q = 448'd0;
 always @(posedge clk) diag_q <= diag_all;
 
-ide_remote #(.KBD(KBD_RST ? 1 : 0), .PAL(VIDEO ? 1 : 0)) remote (
+// Канал «Вектор» <-> ESP (vchan.v): провода к ide_remote.
+wire       ch_poll, ch_pop, ch_push, ch_flushed, ch_avail, ch_e2v_empty, ch_alive;
+wire [7:0] ch_wdata, ch_head;
+
+ide_remote #(.KBD(KBD_RST ? 1 : 0), .PAL(VIDEO ? 1 : 0), .CHAN(HAS_CHAN ? 1 : 0)) remote (
     .clk(clk), .reset(reset), .por(por),
     .rem_reset(rem_reset),
     .rx_data(spi_rx), .rx_valid(spi_rx_valid), .tx_data(spi_tx),
@@ -512,6 +517,9 @@ ide_remote #(.KBD(KBD_RST ? 1 : 0), .PAL(VIDEO ? 1 : 0)) remote (
     .scr_req_stb(scr_req_stb), .scr_req_row(scr_req_row),
     .sr_start(sr_start), .sr_next(sr_next), .sr_byte(sr_byte),
     .pal_ra(pal_ra), .pal_rd(pal_rd), .pal_busy(pal_busy),
+    .ch_poll(ch_poll), .ch_pop(ch_pop), .ch_push(ch_push), .ch_wdata(ch_wdata),
+    .ch_head(ch_head), .ch_avail(ch_avail), .ch_e2v_empty(ch_e2v_empty),
+    .ch_flushed(ch_flushed), .ch_alive(ch_alive),
     // Первый блок (0x38..0x3F) — квазидиск; второй (0x20..0x27) — измерения
     // наблюдателя. Порядок внутри слова: младший байт первым.
     // Блок 5 (0x68..0x6F): растр, прокрутка, дисковод, набор узлов битстрима.
@@ -744,6 +752,26 @@ mouse mouse (
 end else begin : g_no_mouse
     assign ms_dout = 8'h00; assign ms_dout_oe = 1'b0;
 end endgenerate
+// ------------------------------------------------------------ канал
+// Порты 28h-2Dh в раскладке UART 16550 для программ на «Векторе»: Wi-Fi
+// модем ESP и настройки платы с самой машины (CL.COM). Выключателя в dev_off
+// у канала нет: без ESP LSR читается 00h -- ни байта, ни места.
+wire [7:0] ch_dout;
+wire       ch_dout_oe;
+generate if (HAS_CHAN) begin : g_has_chan
+vchan chan (
+    .clk(clk), .por(por),
+    .port(bus_addr), .iord(iord), .iowr_reg(iowr_reg), .din(shd_in),
+    .dout(ch_dout), .dout_oe(ch_dout_oe),
+    .esp_alive(ch_alive), .esp_poll(ch_poll), .esp_push(ch_push), .esp_wdata(ch_wdata),
+    .esp_pop(ch_pop), .v2e_head(ch_head), .v2e_avail(ch_avail), .e2v_empty(ch_e2v_empty),
+    .flushed(ch_flushed)
+);
+end else begin : g_no_chan
+    assign ch_dout = 8'h00; assign ch_dout_oe = 1'b0;
+    assign ch_head = 8'h00; assign ch_avail = 1'b0; assign ch_e2v_empty = 1'b1;
+    assign ch_flushed = 1'b0;
+end endgenerate
 // ------------------------------------------------------ генератор кадра
 // Диагностика генератора кадра (блоки 4 и 5, см. ниже) -- снаружи генерации,
 // чтобы без видео читались нулями.
@@ -853,14 +881,16 @@ end else begin : g_novideo
 end endgenerate
 
 // -------------------------------------------------- арбитраж шины данных
-// Одновременно претендовать не могут: порты IDE, AY, ВГ93 и мыши не пересекаются,
+// Одновременно претендовать не могут: порты IDE, AY, ВГ93, мыши и канала не пересекаются,
 // а подставной загрузчик отвечает только на чтения памяти.
 // Квазидиск здесь не участвует — ОЗУ отвечает на шину само.
-wire       bus_oe   = ide_cpu_dout_oe | ay_dout_oe | ms_dout_oe | fdc_dout_oe | fr_dout_oe;
+wire       bus_oe   = ide_cpu_dout_oe | ay_dout_oe | ms_dout_oe | fdc_dout_oe | fr_dout_oe
+                    | ch_dout_oe;
 wire [7:0] bus_dout = ide_cpu_dout_oe ? ide_cpu_dout
                     : ay_dout_oe      ? ay_dout
                     : fdc_dout_oe     ? fdc_dout
                     : fr_dout_oe      ? fr_dout
+                    : ch_dout_oe      ? ch_dout
                     :                   ms_dout;
 
 assign shd     = bus_oe ? bus_dout : 8'hZZ;

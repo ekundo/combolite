@@ -771,8 +771,12 @@ def main():
                 return 2
             print('%s: %s, %d страниц, %d байт образа' % (rest[0], part, rows, len(img)))
             t = time.time()
-            for off in range(0, len(img), 32768):
-                code, out = b.go('POST', '/api/fpga/part?off=%d' % off, img[off:off + 32768])
+            # Части по 8 КБ, а не по 32: тело запроса плата берёт одним куском кучи,
+            # и после загрузки ESP 32 КБ подряд находились не всегда (25.10.2026,
+            # 503 out of memory), а сам образ раскладывается блоками по 4 КБ.
+            PART = 8192
+            for off in range(0, len(img), PART):
+                code, out = b.go('POST', '/api/fpga/part?off=%d' % off, img[off:off + PART])
                 if code != 200:
                     print('%d: %s' % (code, out.decode('utf-8', 'replace').strip()))
                     return 1

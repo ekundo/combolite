@@ -163,6 +163,7 @@ wire nwr     = ~(sel_reg & iowr);
 reg [7:0] r_sel;
 always @(posedge clk or posedge reset)
     if (reset)              r_sel <= 8'h00;
+    else if (~enable)        r_sel <= 8'h00;
     else if (sel_sel & iowr) r_sel <= din;
 
 wire sel_drive = r_sel[SEL_DRIVE_BIT];
@@ -179,7 +180,12 @@ wire sel_side  = r_sel[SEL_SIDE_BIT];
 // автомат ядра шагал бы на неустоявшемся такте, если команду дадут сразу.
 // Захват асинхронен clk_fdc, но
 // снятие всё равно идёт через те же два триггера.
-wire       core_rst = reset | ~clk_fdc_lock;
+// Выключенный контроллер тоже держит ядро в сбросе. Иначе команда, начатая до
+// выключения, ждёт индекса без конца (линии к приводу неактивны, индекса нет),
+// занятость держит мотор, и при включении на ходу выбор и мотор выставлялись
+// сразу уровнем: 3,5" на первой rev4 не раскрутился, пока не сменили дискету
+// (23.10.2026). Включение на ходу теперь равно холодному старту.
+wire       core_rst = reset | ~clk_fdc_lock | ~enable;
 reg [1:0] nres_s = 2'b00;
 always @(posedge clk_fdc or posedge core_rst)
     if (core_rst) nres_s <= 2'b00;
@@ -308,6 +314,7 @@ always @(posedge clk or posedge reset)
 wire            mot_kick = (sel_sel & iowr) | (sel_reg & (iord | iowr)) | busy_held | wg_s[1];
 always @(posedge clk or posedge reset)
     if (reset) begin mot_live <= 1'b0; mot_age <= 0; end
+    else if (~enable) begin mot_live <= 1'b0; mot_age <= 0; end
     else if (mot_kick) begin mot_live <= 1'b1; mot_age <= 0; end
     else if (mot_live) begin
         if (mot_age == MOTOR_HOLD[MH_W-1:0]) mot_live <= 1'b0;

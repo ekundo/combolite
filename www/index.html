@@ -2917,16 +2917,6 @@ function Meta() {
       </div>
       ${said && html`<p class="note">${said}</p>`}
     </div>`}
-    ${/* «Вектор» сам писал на диск с тех пор, как мы читали каталоги. Значит
-         показанное могло устареть: у машины каталог в ОЗУ, и она сбрасывает
-         его на диск когда сочтёт нужным. Отказ на Apply это поймает и так,
-         сверив каталог, — но узнавать о таком в конце работы обидно, поэтому
-         плашка стоит с самого начала и предлагает перечитать. */''}
-    ${info.vector_touched && html`<button class="pill mode warn"
-            data-tip=${t('the Vector wrote to the disk itself — what you see may be stale')}
-            onClick=${e => { e.stopPropagation();
-                             rescan((m, k) => toast(m, k)) }}
-            >${t('the Vector touched the drive')}</button>`}
     ${/* Плашка только когда есть что сообщить — то есть когда плата прошита
          без записи. Обычный случай молчит: постоянное «чтение и запись»
          читалось бы как состояние замка, а замок берётся на те секунды, что идёт
@@ -2936,6 +2926,24 @@ function Meta() {
       data-tip=${t('the board refuses writes — it was flashed read-only')}
       >${t('read-only')}</span>`}
   </div>`;
+}
+
+/* «Вектор» сам писал на диск с тех пор, как мы читали каталоги. Значит
+ * показанное могло устареть: у машины каталог в ОЗУ, и она сбрасывает его на
+ * диск когда сочтёт нужным. Отказ на Apply это поймает и так, сверив каталог, —
+ * но узнавать о таком в конце работы обидно, поэтому плашка стоит с самого
+ * начала и предлагает перечитать.
+ *
+ * Последней в левой группе шапки, а не у привода: она то появляется, то
+ * пропадает, и у привода двигала туда-сюда всё, что правее, — плату, сеть,
+ * обновление. В конце группы она занимает пустое место до кнопки справки. */
+function Touched() {
+  if (!info || !info.vector_touched) return null;
+  return html`<button class="pill mode warn"
+          data-tip=${t('the Vector wrote to the disk itself — what you see may be stale')}
+          onClick=${e => { e.stopPropagation();
+                           rescan((m, k) => toast(m, k)) }}
+          >${t('the Vector touched the drive')}</button>`;
 }
 
 /* Короткие имена языков для переключателя. Не флаг: флагом называют страну, а
@@ -4328,7 +4336,7 @@ function App() {
 
   /* Вкладок нет: показывать нечего, кроме дискет. */
   return html`<div>
-    <header><h1>COMBOLITE</h1><${Meta}/><${Board}/><${Radio}/><${Update}/>
+    <header><h1>COMBOLITE</h1><${Meta}/><${Board}/><${Radio}/><${Update}/><${Touched}/>
       <button class="ask" data-tip=${t('what this can do')} aria-label=${t('help')}
               onClick=${() => { st.help = true; bump() }}>?</button>
       <${ThemePick}/><${LangPick}/></header>
