@@ -79,12 +79,13 @@ const fill = new THREE.DirectionalLight(0xdfe8ff, 0.5);
 fill.position.set(180, 220, -140);
 scene.add(sun, fill, new THREE.HemisphereLight(0xffffff, 0x8a8f8c, 0.3));
 
-// Клетка 5 мм по всей поверхности корпуса, трехпроекционная: грань берет
-// линии той плоскости, к которой ближе ее нормаль (верх -- x и y, стенки --
-// вдоль стенки и по высоте). На скатах крышки клетка гнется, рельеф виден и
-// на белом. Линии ~1 пиксель (fwidth), мелкая клетка вдали гаснет.
+// Шашечка 5 мм, серо-белая, по всей поверхности корпуса, трехпроекционная:
+// грань берет клетку той плоскости, к которой ближе ее нормаль (нормаль -- по
+// производным позиции, у сетки корпуса в GLB своих нормалей нет). На скатах
+// крышки клетки вытягиваются и гнутся -- рельеф виден и на белом. Клетка с
+// фильтрацией по fwidth: вдали сходится в ровный серый, без муара.
 const CELL = 5.0;
-function gridLines(mat) {
+function checkerPattern(mat) {
   mat.envMapIntensity = 0.45;
   mat.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
@@ -93,19 +94,19 @@ function gridLines(mat) {
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
         varying vec3 vGridP;
-        float gridLine(float v) {
-          float f = v / ${CELL.toFixed(2)};
-          float w = fwidth(f);
-          float l = 1.0 - min(abs(fract(f - 0.5) - 0.5) / max(w, 1e-5), 1.0);
-          return l * clamp(1.0 - (w - 0.08) * 5.0, 0.0, 1.0);
+        float checker(vec2 p) {
+          p /= ${CELL.toFixed(2)};
+          vec2 w = fwidth(p) + 1e-4;
+          vec2 i = 2.0 * (abs(fract((p - 0.5 * w) * 0.5) - 0.5)
+                        - abs(fract((p + 0.5 * w) * 0.5) - 0.5)) / w;
+          return 0.5 - 0.5 * i.x * i.y;
         }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec3 gn = pow(abs(normalize(cross(dFdx(vGridP), dFdy(vGridP)))) + 1e-4, vec3(6.0));
         gn /= (gn.x + gn.y + gn.z);
-        float gl = gn.z * max(gridLine(vGridP.x), gridLine(vGridP.y))
-                 + gn.x * max(gridLine(vGridP.y), gridLine(vGridP.z))
-                 + gn.y * max(gridLine(vGridP.x), gridLine(vGridP.z));
-        diffuseColor.rgb *= 1.0 - 0.42 * gl;`);
+        float ck = gn.z * checker(vGridP.xy) + gn.x * checker(vGridP.yz)
+                 + gn.y * checker(vGridP.xz);
+        diffuseColor.rgb *= 1.0 - 0.22 * ck;`);
   };
   mat.needsUpdate = true;
 }
@@ -165,7 +166,7 @@ new GLTFLoader().parse(bytes.buffer, '', (gltf) => {
   for (const k of CASE) if (parts[k]) {
     parts[k].material = parts[k].material.clone();
     parts[k].material.transparent = true;
-    gridLines(parts[k].material);
+    checkerPattern(parts[k].material);
   }
   viewIso();
   update();
