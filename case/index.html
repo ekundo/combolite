@@ -72,9 +72,34 @@ document.body.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-const sun = new THREE.DirectionalLight(0xffffff, 1.4);
-sun.position.set(-120, 260, 160);
-scene.add(sun, new THREE.HemisphereLight(0xffffff, 0x8a8f8c, 0.5));
+// ключ ниже и сбоку, рассеянного меньше: белый пластик иначе плоский
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(-200, 140, 120);
+const fill = new THREE.DirectionalLight(0xdfe8ff, 0.5);
+fill.position.set(180, 220, -140);
+scene.add(sun, fill, new THREE.HemisphereLight(0xffffff, 0x8a8f8c, 0.3));
+
+// Слои печати: полосы по высоте модели (локальная z, мм) с шагом 0,2 мм,
+// как у детали с FDM-принтера. На ровном верхе полос нет, на скатах они
+// сгущаются -- так виден рельеф белой крышки. Где полосы мельче пикселя,
+// они гаснут (fwidth), иначе на общем виде пошел бы муар.
+const LAYER = 0.2;
+function layerLines(mat) {
+  mat.envMapIntensity = 0.45;
+  mat.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying float vLayerZ;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLayerZ = position.z;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vLayerZ;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float lf = vLayerZ / ${LAYER.toFixed(3)};
+        float lw = fwidth(lf);
+        float amp = 0.16 * clamp(1.0 - (lw - 0.15) * 2.5, 0.0, 1.0);
+        diffuseColor.rgb *= 1.0 - amp * (0.5 + 0.5 * cos(6.2831853 * lf));`);
+  };
+  mat.needsUpdate = true;
+}
 
 const camera = new THREE.PerspectiveCamera(30, 1, 1, 5000);
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -131,6 +156,7 @@ new GLTFLoader().parse(bytes.buffer, '', (gltf) => {
   for (const k of CASE) if (parts[k]) {
     parts[k].material = parts[k].material.clone();
     parts[k].material.transparent = true;
+    layerLines(parts[k].material);
   }
   viewIso();
   update();
